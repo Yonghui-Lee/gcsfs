@@ -1,81 +1,67 @@
-# Low-Level Design (LLD): GCSFS Custom InfoCache
+# Low-Level Design (LLD): Metadata InfoCache
 
 ## 1. Objective and Motivation
-The primary objective of this design is to introduce a dedicated, single-object metadata cache (`InfoCache`) into `gcsfs.GCSFileSystem`. 
+The primary objective of this design is to introduce a dedicated, single-object metadata cache (`InfoCache`) to optimize workloads that make repetitive metadata API calls (`info()`, `exists()`, `modified()`, `size()`).
 
 **The Problem:**
-Currently, GCSFS relies heavily on `dircache` (a directory-level cache) to reduce expensive network calls. When a directory is listed, its contents are cached. Subsequent `info()` calls for files *within* that directory can be resolved locally in $O(N)$ time. However, when users perform direct, point-lookups on specific files without first listing the directory, GCSFS makes direct API calls (e.g., `storage.objects.get`).
+Currently, filesystems like GCSFS rely heavily on `dircache` (a directory-level cache) to reduce expensive network calls. When a directory is listed, its contents are cached. Subsequent `info()` calls for files *within* that directory can be resolved locally in $O(N)$ time. However, when users perform direct, point-lookups on specific files without first listing the directory, the filesystem makes direct API calls (e.g., `storage.objects.get`).
 
-In AI/ML workloads (such as PyTorch `DataLoader`s, Dask array operations, or Ray datasets), systems frequently probe files by calling `exists()`, `info()`, `modified()`, or `size()` on individual, known paths. Without a cache, this results in massive redundant network overhead, increasing latency and Google Cloud API costs (Class A operations), particularly in high-throughput distributed training environments.
+In AI/ML workloads (such as PyTorch `DataLoader`s, Dask array operations, or Ray datasets), systems frequently probe files by calling `exists()`, `info()`, `modified()`, or `size()` on individual, known paths. Without a cache, this results in massive redundant network overhead, increasing latency and Cloud API costs, particularly in high-throughput distributed training environments.
 
 **The Solution:**
-The new `InfoCache` will specifically store the results of single-file `info()` metadata calls. It will mirror the semantic behavior of the existing `fsspec.dircache.DirCache`—providing Time-To-Live (TTL) expiration and bounded LRU (Least Recently Used) eviction—but tailored exclusively for single-path lookups rather than hierarchical directory traversals.
+The new `InfoCache` will specifically store the results of single-file `info()` metadata calls. It will mirror the semantic behavior of the existing `fsspec.dircache.DirCache`—providing Time-To-Live (TTL) expiration and bounded LRU (Least Recently Used) eviction—but tailored exclusively for single-path lookups rather than hierarchical directory traversals. Crucially, the info cache will *only* be populated by `_info()` successes and *not* by directory listing operations like `ls()` or `find()`.
 
 ---
 
 ## 2. Key Design Decisions and Trade-offs
 
 ### 2.1 Code Location: GCSFS vs. `fsspec`
-*Decision:* Where should the `InfoCache` logic live?
-*   **Option A: Upstream to `fsspec` (Base class `fsspec.caching.InfoCache`)**
-    *   *Pros:* Available to all filesystem implementations (S3, Azure, local); reduces code duplication across the ecosystem.
-    *   *Cons:* `fsspec` caching is historically focused on byte-buffer chunking (readahead, block cache). Introducing a metadata dictionary cache changes the scope of `fsspec.caching`. Different filesystems have vastly different metadata structures and invalidation semantics, making a generic `InfoCache` difficult to generalize safely.
-*   **Option B: Implement locally in `gcsfs` [Selected]**
-    *   *Pros:* Allows us to tailor the cache specifically to GCS's versioning (`generation`), directory marker behavior, and invalidation rules without waiting for upstream consensus.
-    *   *Cons:* Cannot be reused directly by `s3fs` or `adlfs` without duplication.
+*Decision:* **Option B: Implement in `fsspec` [Selected]**
 
-### 2.2 Implementation Structure: New File vs. Existing File
-*Decision:* Should the `InfoCache` class be placed in a new `caching.py` file or kept in `core.py`?
-*   **Option A: Inline within `gcsfs/core.py`**
-    *   *Pros:* Keeps all filesystem logic together; avoids circular import issues between `core.py` and a potential `caching.py`.
-    *   *Cons:* `core.py` is already over 2,500 lines long. Adding more classes bloats the file and violates separation of concerns.
-*   **Option B: New or existing `gcsfs/caching.py` [Selected]**
-    *   *Pros:* Strong separation of concerns. The caching module handles state, TTL, and LRU eviction, while `core.py` handles GCS API logic. Makes unit testing the cache easier.
-    *   *Cons:* Might require careful import management to avoid circular dependencies if cache classes need to reference GCS-specific types.
+The design question is whether the cache should live inside `gcsfs` or in `fsspec` (in a form that async and sync backends can both adopt).
+
+*   **Option A: Implement in `gcsfs`**
+    *   *Pros:* 
+        1. **Matches the real hook point.** `gcsfs` already owns the async `_info()` implementation containing GCS-specific race logic. Caching here is straightforward.
+        2. **Fastest path to user value.** Can land in one repo and be benchmarked immediately.
+        3. **Sharper invalidation model.** Allows exact-object invalidation alongside existing parent-listing invalidation without retrofitting across all `fsspec` backends.
+    *   *Cons:*
+        1. **No immediate ecosystem benefit.** Other backends won't gain info caching automatically.
+        2. **Some duplication.** Needs its own cache class or a local adaptation of `DirCache` semantics.
+
+*   **Option B: Implement in `fsspec` [Selected]**
+    *   *Pros:*
+        1. **Ecosystem Win.** Multiple backends (S3, Azure, local, GCS) can converge on one cache API and implementation.
+        2. **Shared Primitives.** A generic TTL/LRU helper serves both listings and info caching, minimizing code duplication.
+        3. **Consistent User-facing Knobs.** Aligns `use_info_cache`, `info_expiry_time`, and `max_info_paths` across all implementations.
+    *   *Cons:*
+        1. **Generation safety.** GCS uses version generation, meaning the path alone is not a sufficient cache key. 
+        *   *Mitigation:* This is easily addressed by implementing the `InfoCache` generically in `fsspec`, while allowing specific filesystem implementations (like `GCSFileSystem`) to override a helper method (e.g., `_get_info_cache_key(path)`) to inject `generation` or other backend-specific identifiers into the cache key.
+        2. **Backend-specific invalidation.** Each backend still needs to explicitly evict object entries on writes. This requires discipline when integrating the cache into various `fsspec` backends.
+
+### 2.2 Implementation Structure
+*Decision:* **Create a new `fsspec.infocache.py` sharing code with `dircache.py` [Selected]**
+*   **Rationale:** Keeps the `InfoCache` class cleanly separated from `fsspec.caching` (which is historically focused on byte-buffer chunking for file content). `InfoCache` handles metadata state, TTL, and LRU eviction similarly to `DirCache`.
 
 ### 2.3 Cache Policy Defaults
-*Decision:* What should the default capacity and TTL be?
-*   **Max Capacity (`max_paths`): 100,000 [Selected]**
-    *   *Pros:* Capping at 100k limits the memory footprint to ~100MB (assuming ~1KB per dict). This safely protects against OOM errors during massive data lake scans while still providing a high hit rate for typical ML training datasets.
-    *   *Cons:* In extremely large directories, entries might be evicted prematurely.
-*   **Time-To-Live (`info_expiry_time`): `None` (Infinite) [Selected]**
-    *   *Pros:* Aligns with existing `dircache` defaults. Maximizes cache hit rate for read-heavy workloads (like ML training) where data is immutable.
-    *   *Cons:* Increases the risk of serving stale metadata if external processes are mutating the bucket. Users with mutable buckets must explicitly configure a TTL.
+*Decision:* **`max_paths=100000`, `info_expiry_time=None` (Infinite).**
+*   **Rationale:** A 100k limit bounds memory usage to ~100MB, preventing OOMs. Infinite TTL aligns with existing `dircache` ergonomics and maximizes read-heavy workload performance. Users with mutable workloads must explicitly configure a TTL.
 
 ### 2.4 Negative Caching
-*Decision:* Should we cache `FileNotFoundError` (404) responses for objects that do not exist?
-*   **Option A: Enable Negative Caching**
-    *   *Pros:* Saves API calls when repeatedly querying missing files (e.g., polling for a file to appear).
-    *   *Cons:* Highly susceptible to "cache poisoning" in distributed systems. If Node A queries a file just before Node B creates it, Node A will permanently think the file is missing until the TTL expires or the cache is cleared.
-*   **Option B: Disable Negative Caching [Selected]**
-    *   *Pros:* Safest for distributed, multi-writer environments. If a file isn't found, we assume it might be created momentarily.
-    *   *Cons:* Workloads that repeatedly poll non-existent files will not see performance improvements and will incur API costs.
+*Decision:* **Disable Negative Caching (Do not cache `FileNotFoundError`).**
+*   **Rationale:** Safest for distributed, multi-writer environments. Prevents cache poisoning where one node temporarily failing to find an object permanently caches the absence, even after another node creates it.
 
 ### 2.5 Metadata Fields
-*Decision:* Should we cache the entire metadata dictionary returned by the GCS API, or only a subset of critical fields?
-*   **Option A: Cache Subset (e.g., `name`, `size`, `updated`, `generation`)**
-    *   *Pros:* Reduces memory overhead per cache entry, potentially allowing a higher `max_paths` limit.
-    *   *Cons:* GCSFS and downstream libraries (like `pandas` or `xarray`) sometimes rely on obscure or extended metadata fields (e.g., `contentType`, `customTime`, ACLs). Stripping fields might cause unexpected `KeyError`s or behavioral changes.
-*   **Option B: Cache Entire Dictionary [Selected]**
-    *   *Pros:* Guarantees semantic equivalence between a cache hit and a direct API call. Safest approach.
-    *   *Cons:* Higher memory footprint per entry. (Mitigated by the strict `max_paths` limit).
+*Decision:* **Cache the entire metadata dictionary.**
+*   **Rationale:** Guarantees semantic equivalence between a cache hit and a direct API call. Downstream libraries may rely on obscure metadata fields (e.g., `customTime`, ACLs).
 
 ---
 
-## 3. Component Design: `InfoCache` Implementation
+## 3. Component Design: `fsspec.infocache` Implementation
 
-We will implement a new class, `InfoCache`, within `gcsfs/caching.py` (or directly within `gcsfs/core.py` to minimize import cyclic dependencies, depending on the current structure).
+We will implement a new class, `InfoCache`, within a new `fsspec/infocache.py` file. It will share design patterns with `DirCache`.
 
-### 3.1 Class Structure and Mechanics
-The class will inherit from `collections.abc.MutableMapping` to ensure it implements the standard Python dictionary interface (`__getitem__`, `__setitem__`, `__delitem__`, `__iter__`, `__len__`). This allows it to be used intuitively throughout the GCSFS codebase.
-
-#### LRU Eviction Mechanism
-To prevent Out-Of-Memory (OOM) crashes when scanning data lakes containing millions of files, the cache must be bounded. Instead of importing heavy external dependencies like `cachetools`, we will utilize an elegant and efficient technique using Python's standard library `functools.lru_cache`. By wrapping a dummy function that pops the oldest item from the internal dictionary, we can automatically trigger LRU eviction when the size limit is reached.
-
-#### TTL (Time-To-Live) Mechanism
-We will maintain a secondary dictionary, `self._times`, that records the `time.time()` of insertion for each key. During retrieval (`__getitem__`), the system will check if the difference between the current time and the insertion time exceeds the configured TTL. If so, the item is silently deleted and a `KeyError` is raised, forcing a fresh network fetch.
-
-### 3.2 Code Implementation
+### 3.1 Code Implementation (`fsspec/infocache.py`)
 
 ```python
 import time
@@ -87,7 +73,7 @@ class InfoCache(MutableMapping):
     Caching of single-object metadata (e.g., from info() calls).
     
     Structure:
-        {"path#generation": {"name": "path", "size": 123, "type": "file", ...}, ...}
+        {"key": {"name": "path", "size": 123, "type": "file", ...}, ...}
         
     Parameters
     ----------
@@ -112,40 +98,29 @@ class InfoCache(MutableMapping):
         self.info_expiry_time = info_expiry_time
         self.max_paths = max_paths
         
-        # We leverage Python's built-in lru_cache to handle the LRU eviction queue.
-        # This wrapper function simply removes the specified key from the underlying dict.
-        # The lru_cache decorator manages the queue size and call history.
         if self.max_paths:
             self._q = lru_cache(self.max_paths + 1)(lambda key: self._cache.pop(key, None))
 
     def __getitem__(self, item):
-        # 1. Check for TTL expiration
         if self.info_expiry_time is not None:
             if self._times.get(item, 0) - time.time() < -self.info_expiry_time:
                 del self._cache[item]
-                # We intentionally do not clean up self._times here to save CPU cycles;
-                # the stale entry in _times will be overwritten on the next set operation.
                 raise KeyError(item)
                 
-        # 2. Update LRU tracking
         if self.max_paths:
-            self._q(item)  # Accessing via _q updates its position to "most recently used"
+            self._q(item)
             
-        # 3. Return cached data
         return self._cache[item]
 
     def __setitem__(self, key, value):
         if not self.use_info_cache:
             return
             
-        # 1. Register or update the key in the LRU queue
         if self.max_paths:
             self._q(key) 
             
-        # 2. Store the metadata value
         self._cache[key] = value
         
-        # 3. Record the insertion timestamp for TTL validation
         if self.info_expiry_time is not None:
             self._times[key] = time.time()
 
@@ -161,7 +136,6 @@ class InfoCache(MutableMapping):
             return False
 
     def clear(self):
-        """Flushes the entire cache and resets LRU tracking."""
         self._cache.clear()
         self._times.clear()
         if self.max_paths:
@@ -177,52 +151,64 @@ class InfoCache(MutableMapping):
 
 ---
 
-## 4. Integrating with `GCSFileSystem`
+## 4. Integrating with `fsspec` and `GCSFileSystem`
 
-### 4.1 Initializer and Configuration
-To provide users with granular control over this new caching layer without disrupting existing workflows, we will add three new configuration arguments to the `GCSFileSystem.__init__` method.
-
-These new arguments will be passed along alongside the existing `use_listings_cache` parameters.
+### 4.1 Base `AbstractFileSystem` Update
+In `fsspec.spec.AbstractFileSystem`, we will provision the `InfoCache` identically to how `DirCache` is provisioned. We will also add a helper method to generate the cache key, which subclasses can override.
 
 ```python
-class GCSFileSystem(asyn.AsyncFileSystem):
-    def __init__(
-        self,
-        # ... existing parameters ...
-        use_info_cache=True,
-        info_cache_expiry_time=None,
-        info_cache_max_paths=100000,
-        **kwargs,
-    ):
-        super().__init__(**kwargs)
+# In fsspec/spec.py
+from fsspec.infocache import InfoCache
+from fsspec.dircache import DirCache
+
+class AbstractFileSystem:
+    def __init__(self, *args, **storage_options):
+        # ... existing init ...
         
-        # Instantiate the custom InfoCache
-        # A default max_paths of 100,000 limits memory overhead to roughly 100MB
-        # per process (assuming ~1KB per metadata dictionary), protecting against OOMs.
+        self.dircache = DirCache(**storage_options)
+        
+        # New instantiation
         self.infocache = InfoCache(
-            use_info_cache=use_info_cache,
-            info_expiry_time=info_cache_expiry_time,
-            max_paths=info_cache_max_paths,
+            use_info_cache=storage_options.get("use_info_cache", True),
+            info_expiry_time=storage_options.get("info_expiry_time", None),
+            max_paths=storage_options.get("info_max_paths", 100000),
         )
+
+    def _get_info_cache_key(self, path, **kwargs):
+        """
+        Derive the key for the info cache. Subclasses can override this
+        to incorporate versioning (e.g., generation) into the key.
+        """
+        return path
 ```
 
-### 4.2 Cache Key Formulation
-GCS heavily relies on object versioning (Generations). Returning cached metadata for a path without verifying the object's generation could lead to serving stale data representing the wrong version of a file.
+### 4.2 Cache Key Formulation in `gcsfs`
+GCS heavily relies on object versioning (Generations). Returning cached metadata for a path without verifying the object's generation could lead to serving stale data. `GCSFileSystem` will override the key generation helper to handle this.
 
-Therefore, the cache key must be a composite string.
-*   **Key Format:** `f"{path}#{generation}"` if `generation` is explicitly requested, otherwise it simply falls back to `path`.
+```python
+# In gcsfs/core.py
+
+class GCSFileSystem(asyn.AsyncFileSystem):
+    # ...
+
+    def _get_info_cache_key(self, path, generation=None, **kwargs):
+        """
+        Override the base cache key generator to include GCS generation.
+        """
+        path = self._strip_protocol(path).rstrip("/")
+        bucket, key, path_generation = self.split_path(path)
+        resolved_generation = _coalesce_generation(generation, path_generation)
+        
+        if resolved_generation:
+            return f"{path}#{resolved_generation}"
+        return path
+```
 
 ---
 
-## 5. Modifying the `_info()` Execution Flow
+## 5. Modifying the `_info()` Execution Flow in `gcsfs`
 
-The `_info()` method will be updated to intercept calls immediately after basic path normalization and root-bucket checks. 
-
-**Execution Sequence:**
-1. **InfoCache Lookup $O(1)$:** Check if the requested path (and generation) exists in `self.infocache`. If it does, and hasn't expired, return it immediately.
-2. **DirCache Fallback $O(N)$:** If not in `infocache`, check if the parent directory exists in the legacy `dircache`. If so, iterate through the parent's children looking for a match.
-3. **Network Call:** If both local caches miss, execute the standard parallel API calls to Google Cloud Storage.
-4. **Cache Population:** If the network call succeeds and returns valid object metadata, store it in `self.infocache` before returning.
+The `_info()` method in `gcsfs.core.GCSFileSystem` will be updated to intercept calls immediately after basic path normalization.
 
 ```python
     async def _info(self, path, generation=None, **kwargs):
@@ -235,9 +221,9 @@ The `_info()` method will be updated to intercept calls immediately after basic 
         resolved_generation = _coalesce_generation(generation, path_generation)
         
         # -------------------------------------------------------------
-        # 1. Custom InfoCache Lookup (O(1) dictionary hit)
+        # 1. InfoCache Lookup (O(1) dictionary hit)
         # -------------------------------------------------------------
-        cache_key = f"{path}#{resolved_generation}" if resolved_generation else path
+        cache_key = self._get_info_cache_key(path, generation=generation)
         if cache_key in self.infocache:
             return self.infocache[cache_key]
 
@@ -272,17 +258,13 @@ The `_info()` method will be updated to intercept calls immediately after basic 
                 if not _is_directory_marker(get_object_res):
                     
                     # -------------------------------------------------------------
-                    # 4. Populate Custom InfoCache on Success
+                    # 4. Populate InfoCache on Success
                     # -------------------------------------------------------------
                     self.infocache[cache_key] = get_object_res
                     return get_object_res
                     
             except FileNotFoundError:
-                # Negative Caching Consideration:
-                # We explicitly do NOT cache FileNotFoundError scenarios.
-                # If an object doesn't exist, it might be actively being written 
-                # by another node in a distributed cluster. Caching "not found" 
-                # could lead to severe race conditions and inconsistencies.
+                # Negative Caching Consideration: Do not cache missing files
                 pass
                 
             return await get_directory_info_task
@@ -290,37 +272,54 @@ The `_info()` method will be updated to intercept calls immediately after basic 
 
 ---
 
-## 6. Cache Consistency: Targeted Invalidation
+## 6. Cache Consistency and Invalidation Surface
 
-To maintain read-after-write consistency, any mutative operation initiated by the client (e.g., `_rm_file`, `_mv_file`, `_put_file`, `_rmdir`) must explicitly invalidate affected entries in both caches.
+`GCSFileSystem` currently uses `invalidate_cache(path)` to clear directory listings. Mutative operations must now explicitly invalidate the exact object from the `infocache` in addition to invalidating the parent directory listing.
 
-The `invalidate_cache(self, path=None)` method will be enhanced to handle `infocache` eviction.
+### 6.1 `invalidate_info` Helper
+We introduce a targeted method for single-file metadata eviction.
 
-### Eviction Logic Considerations
-If a user deletes a directory (e.g., `rm -r /bucket/data/`), we must theoretically evict *all* single-file entries within `infocache` that reside under that directory path. 
+```python
+    def invalidate_info(self, path, generation=None):
+        """
+        Invalidate exact object entries in the info cache.
+        If generation is None, evicts all generations for the path.
+        """
+        path = self._strip_protocol(path).rstrip("/")
+        if generation is not None:
+            self.infocache.pop(self._get_info_cache_key(path, generation=generation), None)
+        else:
+            # Evict all generations for this path
+            keys_to_delete = [k for k in self.infocache if k == path or k.startswith(f"{path}#")]
+            for k in keys_to_delete:
+                self.infocache.pop(k, None)
+```
 
-Because `InfoCache` operates as a flat dictionary, we can achieve this efficiently using a string prefix match (`k.startswith(f"{path}/")`). For a dictionary capped at 100k items, Python can execute this list comprehension check in milliseconds, making it perfectly acceptable for infrequent cache invalidation events.
+### 6.2 Broad Mutation Surface Updates
+We must insert calls to `self.invalidate_info(path)` in all metadata-mutating and object-creating/deleting methods in `gcsfs/core.py`.
+
+*   **`_rm_file(self, path, ...)`**: Add `self.invalidate_info(path)`.
+*   **`_rm_files(self, paths, ...)`**: Add `[self.invalidate_info(p) for p in paths]`.
+*   **`_mv_file_cache_update(self, path1, path2, ...)`**: Add `self.invalidate_info(path1)` and `self.invalidate_info(path2)`.
+*   **`_cp_file(self, path1, path2, ...)`**: Add `self.invalidate_info(path2)`.
+*   **`_put_file(self, lpath, rpath, ...)`**: Add `self.invalidate_info(rpath)`.
+*   **`_pipe_file(self, path, ...)`**: Add `self.invalidate_info(path)`.
+*   **`_merge(self, path, ...)`**: Add `self.invalidate_info(path)`.
+*   **`_setxattrs(self, path, ...)`**: Add `self.invalidate_info(path)` (since `info()` returns these attributes).
+
+*Note: The existing calls to `self.invalidate_cache(self._parent(path))` inside these methods will remain untouched to ensure `dircache` listing invalidation and `fsspec` transaction-delayed invalidation stay correct.*
+
+### 6.3 Handling `refresh=True`
+Calls like `ls(refresh=True)` or `info(refresh=True)` invoke `self.invalidate_cache(path)`. To keep behavior consistent, `invalidate_cache` should completely wipe `infocache` entries falling under that directory hierarchy.
 
 ```python
     def invalidate_cache(self, path=None):
-        """
-        Invalidate the directory listing cache AND the single-file info cache 
-        for a given path and its descendants.
-        """
         if path is None:
-            logger.debug("invalidate_cache clearing all caches")
             self.dircache.clear()
             self.infocache.clear()
         else:
             path = self._strip_protocol(path).rstrip("/")
-
-            # -------------------------------------------------------------
-            # 1. Clear infocache for exact matches and descendant children
-            # -------------------------------------------------------------
-            # We must clear:
-            # - Exact file paths (e.g., "bucket/file.txt")
-            # - Paths with generations (e.g., "bucket/file.txt#123456")
-            # - Descendant files if path is a directory (e.g., "bucket/folder/child.txt")
+            # Wipe exact info matches or descendants
             keys_to_delete = [
                 k for k in self.infocache 
                 if k == path or k.startswith(f"{path}#") or k.startswith(f"{path}/")
@@ -328,13 +327,10 @@ Because `InfoCache` operates as a flat dictionary, we can achieve this efficient
             for k in keys_to_delete:
                 self.infocache.pop(k, None)
 
-            # -------------------------------------------------------------
-            # 2. Clear dircache parent directories (Existing Logic)
-            # -------------------------------------------------------------
-            # Bubble up the directory tree, clearing directory listings
-            while path:
-                self.dircache.pop(path, None)
-                path = self._parent(path)
+            # ... existing dircache while loop ...
+            # IMPORTANT: Call super().invalidate_cache(path) if fsspec requires 
+            # transaction registration (gcsfs currently handles transactions via 
+            # `self._invalidated_caches_in_transaction.append(path)`).
 ```
 
 ---
@@ -343,34 +339,23 @@ Because `InfoCache` operates as a flat dictionary, we can achieve this efficient
 
 Testing must rigorously validate both the mechanical constraints of the cache class itself and the network-saving behavior within the filesystem integration.
 
-### 7.1 Unit Tests (`test_caching.py` or `test_core.py`)
-1. **LRU Eviction Constraint:**
-   * Create an `InfoCache` with `max_paths=3`.
-   * Insert items `A`, `B`, `C`, `D`.
-   * Assert that `len(cache) == 3`.
-   * Assert that item `A` was evicted (raises `KeyError`).
-   * Access item `B` (moving it to MRU), insert item `E`. Assert `C` is evicted.
-2. **Time-To-Live (TTL) Expiration:**
-   * Create an `InfoCache` with `info_expiry_time=1`.
-   * Insert item `A`. Assert it can be retrieved.
-   * `time.sleep(1.1)` (or mock `time.time()`).
-   * Assert accessing `A` raises `KeyError` and cleans up the cache entry.
+### 7.1 Unit Tests (`fsspec/tests/test_infocache.py`)
+1. **LRU Eviction Constraint:** Create an `InfoCache` with `max_paths=3`. Insert 4 items. Assert size is 3 and oldest is evicted.
+2. **TTL Expiration:** Create `InfoCache` with `info_expiry_time=1`. Insert item. Sleep 1.1s. Assert `KeyError` on retrieval.
 
-### 7.2 Integration Tests (`test_core.py`)
-1. **Network Bypass (Cache Hit):**
-   * Execute `fs.info(test_file_path)` (mock network is hit 1 time).
-   * Execute `fs.info(test_file_path)` again. 
-   * Assert the mock network was *not* hit the second time, and the returned dictionary is identical.
-2. **Invalidation upon Deletion:**
-   * Execute `fs.info(test_file)`. (Cached).
-   * Execute `fs.rm(test_file)`. (Triggers `invalidate_cache`).
-   * Execute `fs.info(test_file)`.
-   * Assert a fresh network request is made resulting in a `FileNotFoundError`.
-3. **Invalidation upon Directory Deletion:**
-   * Execute `fs.info(dir/file1.txt)`. (Cached).
-   * Execute `fs.rm(dir/, recursive=True)`.
-   * Assert `fs.infocache` no longer contains the entry for `dir/file1.txt`.
+### 7.2 Integration Tests (`gcsfs/tests/test_core.py`)
+1. **Network Bypass (Cache Hit):** 
+   * `fs.info(path)` -> API hit. 
+   * `fs.info(path)` -> No API hit.
+2. **`ls()` Does Not Populate InfoCache:**
+   * `fs.ls(dir_path)` -> Populates `dircache`.
+   * Assert `fs.infocache` is empty.
+3. **Exact-Entry Invalidation across Mutation Surface:**
+   * **Write Ops:** Call `_pipe_file()`, `_put_file()`, `_cp_file()`, `_merge()`. Assert `invalidate_info` is triggered for the destination, forcing the next `info()` to hit the API.
+   * **Delete Ops:** Call `_rm_file()`, `_rm_files()`. Assert `invalidate_info` is triggered for the targets.
+   * **Move Ops:** Call `_mv_file()`. Assert `invalidate_info` is triggered for both source and destination.
+   * **Metadata Ops:** Call `_setxattrs()`. Assert `invalidate_info` is triggered so subsequent `info()` returns the updated metadata.
 4. **Generation Separation:**
-   * Execute `fs.info(test_file, generation="111")`.
-   * Execute `fs.info(test_file, generation="222")`.
+   * `fs.info(path, generation="111")`
+   * `fs.info(path, generation="222")`
    * Assert two distinct API calls occurred and two separate entries exist in `infocache`.
