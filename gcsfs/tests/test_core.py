@@ -150,6 +150,35 @@ def test_dircache_filled(gcs):
     assert len(gcs.dircache)
 
 
+def test_infocache(gcs):
+    # Missing objects should not be cached
+    try:
+        gcs.info(f"{TEST_BUCKET}/doesnotexist")
+    except FileNotFoundError:
+        pass
+    assert f"{TEST_BUCKET}/doesnotexist" not in gcs.infocache
+
+    # Existing object should be cached
+    with gcs.open(f"{TEST_BUCKET}/test_info_cache", "w") as f:
+        f.write("data")
+    assert f"{TEST_BUCKET}/test_info_cache" not in gcs.infocache
+    
+    info = gcs.info(f"{TEST_BUCKET}/test_info_cache")
+    assert f"{TEST_BUCKET}/test_info_cache" in gcs.infocache
+    assert gcs.infocache[f"{TEST_BUCKET}/test_info_cache"]["size"] == info["size"]
+
+    # Mutations should invalidate exact object infocache
+    with gcs.open(f"{TEST_BUCKET}/test_info_cache", "w") as f:
+        f.write("more data")
+    assert f"{TEST_BUCKET}/test_info_cache" not in gcs.infocache
+
+    # rm should clear infocache
+    gcs.info(f"{TEST_BUCKET}/test_info_cache")
+    assert f"{TEST_BUCKET}/test_info_cache" in gcs.infocache
+    gcs.rm(f"{TEST_BUCKET}/test_info_cache")
+    assert f"{TEST_BUCKET}/test_info_cache" not in gcs.infocache
+
+
 def test_many_connect(gcs_factory):
     from multiprocessing.pool import ThreadPool
 

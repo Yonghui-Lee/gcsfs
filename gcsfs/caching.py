@@ -1,4 +1,7 @@
+import time
 from collections import deque
+from collections.abc import MutableMapping
+from functools import lru_cache
 
 from fsspec.caching import BaseCache, register_cache
 
@@ -119,3 +122,73 @@ class ReadAheadChunked(BaseCache):
 
 
 register_cache(ReadAheadChunked, clobber=True)
+
+
+class InfoCache(MutableMapping):
+    """
+    Caching of single-object metadata (e.g., from info() calls).
+    
+    Structure:
+        {"key": {"name": "path", "size": 123, "type": "file", ...}, ...}
+    """
+    def __init__(
+        self,
+        use_info_cache=True,
+        info_expiry_time=None,
+        max_paths=100000,
+    ):
+        self._cache = {}
+        self._times = {}
+        self.use_info_cache = use_info_cache
+        self.info_expiry_time = info_expiry_time
+        self.max_paths = max_paths
+        
+        if self.max_paths:
+            self._q = lru_cache(self.max_paths + 1)(lambda key: self._cache.pop(key, None))
+
+    def __getitem__(self, item):
+        if self.info_expiry_time is not None:
+            if self._times.get(item, 0) - time.time() < -self.info_expiry_time:
+                del self._cache[item]
+                raise KeyError(item)
+                
+        if self.max_paths:
+            self._q(item)
+            
+        return self._cache[item]
+
+    def __setitem__(self, key, value):
+        if not self.use_info_cache:
+            return
+            
+        if self.max_paths:
+            self._q(key) 
+            
+        self._cache[key] = value
+        
+        if self.info_expiry_time is not None:
+            self._times[key] = time.time()
+
+    def __delitem__(self, key):
+        del self._cache[key]
+        self._times.pop(key, None)
+
+    def __contains__(self, item):
+        try:
+            self[item]
+            return True
+        except KeyError:
+            return False
+
+    def clear(self):
+        self._cache.clear()
+        self._times.clear()
+        if self.max_paths:
+            self._q.cache_clear()
+
+    def __len__(self):
+        return len(self._cache)
+
+    def __iter__(self):
+        entries = list(self._cache)
+        return (k for k in entries if k in self)
