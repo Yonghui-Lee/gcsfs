@@ -391,6 +391,20 @@ class ExtendedGcsFileSystem(GCSFileSystem):
             if key.startswith(source_prefix):
                 self.dircache.pop(key, None)
 
+        keys_to_delete = [
+            k for k in self.infocache
+            if k == path1 or k.startswith(f"{path1}#") or k.startswith(source_prefix)
+        ]
+        for k in keys_to_delete:
+            self.infocache.pop(k, None)
+
+        keys_to_delete_dest = [
+            k for k in self.infocache
+            if k == path2 or k.startswith(f"{path2}#") or k.startswith(f"{path2.rstrip('/')}/")
+        ]
+        for k in keys_to_delete_dest:
+            self.infocache.pop(k, None)
+
         # 2. Remove the old source entry from its parent's listing.
         self.dircache.pop(path1, None)
         parent1 = self._parent(path1)
@@ -431,6 +445,8 @@ class ExtendedGcsFileSystem(GCSFileSystem):
         dest_bucket, _, _ = self.split_path(path2)
 
         if await self._is_bucket_hns_enabled(src_bucket) and src_bucket == dest_bucket:
+            self.invalidate_info(path1)
+            self.invalidate_info(path2)
             src_parent = self._parent(path1)
             if src_parent in self.dircache:
                 path1_stripped = self._strip_protocol(path1)
@@ -658,6 +674,9 @@ class ExtendedGcsFileSystem(GCSFileSystem):
             logger.debug(f"create_folder request: {request}")
             client = await self._get_control_plane_client()
             await client.create_folder(request=request)
+            
+            self.invalidate_info(path)
+
             # Instead of invalidating the parent cache, update it to add the new entry.
             parent_path = self._parent(path)
             if parent_path in self.dircache:
@@ -779,6 +798,7 @@ class ExtendedGcsFileSystem(GCSFileSystem):
             await client.delete_folder(request=request)
 
             # Remove the directory from the cache and from its parent's listing.
+            self.invalidate_info(path)
             self.dircache.pop(path, None)
             parent = self._parent(path)
             if parent in self.dircache:
@@ -1204,6 +1224,7 @@ class ExtendedGcsFileSystem(GCSFileSystem):
             finalize_on_close = kwargs.get("finalize_on_close", self.finalize_on_close)
             await zb_hns_utils.close_aaow(writer, finalize_on_close=finalize_on_close)
 
+        self.invalidate_info(rpath)
         self.invalidate_cache(self._parent(rpath))
 
     async def _pipe_file(
@@ -1276,6 +1297,7 @@ class ExtendedGcsFileSystem(GCSFileSystem):
             finalize_on_close = kwargs.get("finalize_on_close", self.finalize_on_close)
             await zb_hns_utils.close_aaow(writer, finalize_on_close=finalize_on_close)
 
+        self.invalidate_info(path)
         self.invalidate_cache(self._parent(path))
 
     async def _get_file(self, rpath, lpath, callback=None, **kwargs):
