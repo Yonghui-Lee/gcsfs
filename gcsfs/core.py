@@ -1117,6 +1117,8 @@ class GCSFileSystem(asyn.AsyncFileSystem):
                 if o["name"].rstrip("/") == name and (
                     not generation or o.get("generation") == generation
                 ):
+                    logger.info(f"[ADDITIONAL LOG] _info hit dircache: {path}")
+                    self.infocache[cache_key] = o
                     return o
         if self._ls_from_cache(path):
             # this is a directory

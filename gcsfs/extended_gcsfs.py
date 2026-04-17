@@ -1,6 +1,8 @@
 import asyncio
 import logging
 import os
+import threading
+import time
 import uuid
 from enum import Enum
 from glob import has_magic
@@ -34,11 +36,27 @@ class BucketType(Enum):
     UNKNOWN = "UNKNOWN"
 
 
+class LoggingGCSFile(GCSFile):
+    def read(self, length=-1):
+        pid = os.getpid()
+        tid = threading.get_ident()
+        logger.info(f"[ADDITIONAL LOG] read: {self.path}, pid={pid}, tid={tid}")
+        return super().read(length)
+
+
+class LoggingZonalFile(ZonalFile):
+    def read(self, length=-1):
+        pid = os.getpid()
+        tid = threading.get_ident()
+        logger.info(f"[ADDITIONAL LOG] read: {self.path}, pid={pid}, tid={tid}")
+        return super().read(length)
+
+
 gcs_file_types = {
-    BucketType.ZONAL_HIERARCHICAL: ZonalFile,
-    BucketType.NON_HIERARCHICAL: GCSFile,
-    BucketType.HIERARCHICAL: GCSFile,
-    BucketType.UNKNOWN: GCSFile,
+    BucketType.ZONAL_HIERARCHICAL: LoggingZonalFile,
+    BucketType.NON_HIERARCHICAL: LoggingGCSFile,
+    BucketType.HIERARCHICAL: LoggingGCSFile,
+    BucketType.UNKNOWN: LoggingGCSFile,
 }
 
 
@@ -67,6 +85,54 @@ class ExtendedGcsFileSystem(GCSFileSystem):
         if self.credentials.token == "anon":
             self.credential = AnonymousCredentials()
         self._storage_layout_cache = {}
+
+    def glob(self, path, **kwargs):
+        pid = os.getpid()
+        tid = threading.get_ident()
+        logger.info(f"[ADDITIONAL LOG] glob: {path}, pid={pid}, tid={tid}")
+        return super().glob(path, **kwargs)
+
+    def info(self, path, generation=None, **kwargs):
+        t0 = time.perf_counter()
+        pid = os.getpid()
+        tid = threading.get_ident()
+        logger.info(f"[ADDITIONAL LOG] info start: {path}, pid={pid}, tid={tid}")
+
+        path_stripped = self._strip_protocol(path).rstrip("/")
+        cache_key = self._get_info_cache_key(path_stripped, generation=generation)
+        hit_cache = cache_key in self.infocache
+        if hit_cache:
+            logger.info(f"[ADDITIONAL LOG] info hit infocache: {path_stripped}, pid={pid}, tid={tid}")
+        else:
+            logger.info(f"[ADDITIONAL LOG] info miss infocache: {path_stripped}, pid={pid}, tid={tid}")
+        logger.info(f"[ADDITIONAL LOG] infocache keys: {list(self.infocache._cache.keys())}")
+        try:
+            return super().info(path, **kwargs)
+        finally:
+            logger.info(
+                f"[ADDITIONAL LOG] info end: {path}, pid={pid}, tid={tid}, took {time.perf_counter() - t0:.4f}s"
+            )
+
+    async def _info(self, path, generation=None, **kwargs):
+        t0 = time.perf_counter()
+        pid = os.getpid()
+        tid = threading.get_ident()
+        logger.info(f"[ADDITIONAL LOG] _info start: {path}, pid={pid}, tid={tid}")
+        
+        path_stripped = self._strip_protocol(path).rstrip("/")
+        cache_key = self._get_info_cache_key(path_stripped, generation=generation)
+        hit_cache = cache_key in self.infocache
+        if hit_cache:
+            logger.info(f"[ADDITIONAL LOG] _info hit infocache: {path_stripped}, pid={pid}, tid={tid}")
+        else:
+            logger.info(f"[ADDITIONAL LOG] _info miss infocache: {path_stripped}, pid={pid}, tid={tid}")
+        logger.info(f"[ADDITIONAL LOG] infocache keys: {list(self.infocache._cache.keys())}")
+        try:
+            return await super()._info(path, generation=generation, **kwargs)
+        finally:
+            logger.info(
+                f"[ADDITIONAL LOG] _info end: {path}, pid={pid}, tid={tid}, took {time.perf_counter() - t0:.4f}s"
+            )
 
     @property
     def grpc_client(self):
@@ -166,6 +232,9 @@ class ExtendedGcsFileSystem(GCSFileSystem):
         """
         Open a file.
         """
+        pid = os.getpid()
+        tid = threading.get_ident()
+        logger.info(f"[ADDITIONAL LOG] open: {path}, pid={pid}, tid={tid}")
         bucket, _, _ = self.split_path(path)
         bucket_type = self._sync_lookup_bucket_type(bucket)
 
