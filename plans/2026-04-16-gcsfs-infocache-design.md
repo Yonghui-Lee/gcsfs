@@ -11,14 +11,16 @@ Those workloads are common in `DataLoader`s, dataset manifests, sharded training
 
 **The solution**
 
-Introduce a dedicated `InfoCache` for successful single-object metadata fetches. The cache is:
+Introduce a dedicated `InfoCache` for successful single-object metadata fetches. The revised design intentionally stays simple:
 
-- opt-in by default, so existing freshness semantics do not silently change
-- bounded by entry count and pruned consistently across all bookkeeping structures
-- keyed by structured, backend-defined keys rather than path-concatenated strings
-- invalidated through indexed path-aware helpers rather than full-cache scans
+- opt-in by default, so freshness does not silently change
+- primary cache keyed by normalized path only
+- generation stored inside the cached value, not in the key
+- no always-on prefix index
+- exact-path invalidation on the hot mutation path
+- subtree invalidation only for explicit refresh/manual invalidation paths
 
-The cache is populated by successful single-object metadata resolutions, including the case where `_info()` resolves a point-lookup from a parent listing already in `dircache` (one entry promoted, not bulk import). It is not populated by bulk traversal in `ls()` or `find()` themselves — the cost-control reason is that a single `ls()` of a large directory could otherwise inflate the cache by tens of thousands of entries from a single call.
+The cache is populated by successful point lookups. It is not bulk-populated by `ls()` or `find()`.
 
 ---
 
@@ -27,7 +29,7 @@ The cache is populated by successful single-object metadata resolutions, includi
 ### 2.1 Code Location: `gcsfs` vs. `fsspec`
 *Decision:* **Implement in `fsspec` first [Selected]**
 
-The cache should live in `fsspec`, with backend-specific hooks for key derivation and invalidation semantics.
+The cache should live in `fsspec`, with backend-specific hooks for path normalization and backend-specific `_info()` integration.
 
 *   **Option A: Implement in `gcsfs` first**
     *   *Pros:*
@@ -42,67 +44,108 @@ The cache should live in `fsspec`, with backend-specific hooks for key derivatio
     *   *Pros:*
         1. Provides one metadata-cache abstraction for all backends.
         2. Keeps cache sizing, TTL, and opt-in behavior consistent across the ecosystem.
-        3. Allows `gcsfs`, `s3fs`, and other backends to share the same tested bounded-cache implementation while still customizing keys and invalidation helpers.
+        3. Allows `gcsfs`, `s3fs`, and other backends to share the same tested bounded-cache implementation while still customizing lookup semantics.
     *   *Cons:*
-        1. The base abstraction must expose enough hooks for backend-specific versioning and path normalization.
+        1. The base abstraction must stay small enough that listing-only backends are not forced into unnecessary machinery.
         2. Each backend still needs a full mutation-surface audit.
 
 ### 2.2 Implementation Structure
-*Decision:* **Add `fsspec.infocache.InfoCache` with explicit indexing and backend hooks [Selected]**
+*Decision:* **Add `fsspec.infocache.InfoCache` with path-keyed primary storage [Selected]**
 
-`InfoCache` should be a dedicated metadata cache rather than an adaptation of byte-range caching. It should share high-level policy concepts with `DirCache` (optional use, TTL, bounded size), but not copy its internal mechanics blindly. Metadata caching needs exact-key invalidation, path-prefix invalidation, and structured keys.
+`InfoCache` should be a dedicated metadata cache rather than an adaptation of byte-range caching. It should share high-level policy concepts with `DirCache` (optional use, TTL, bounded size), but it should not copy `DirCache` internals or introduce more indexing than the problem needs.
 
 ### 2.3 Cache Policy Defaults
-*Decision:* **`use_info_cache=False`, `max_paths=100000`, `info_expiry_time=60` [Selected]**
+*Decision:* **`use_info_cache=False`, `max_info_paths=100000`, `info_expiry_time=60` [Selected]**
 
 *   **Rationale:**
     1. Disabling the cache by default preserves current freshness behavior for direct point-lookups.
-    2. `max_paths` bounds the number of live cached metadata entries; actual memory usage still depends on metadata payload size and path length, so the design should not claim a fixed byte estimate.
-    3. When users opt in, a 60s default TTL keeps the feature safe in mildly mutable environments while still absorbing tight repeated-probe patterns. Users on immutable datasets can pass `info_expiry_time=None` explicitly for unbounded reuse; users on actively mutating datasets can shorten it.
+    2. `max_info_paths` bounds the number of live cached metadata entries.
+    3. When users opt in, a 60-second default TTL keeps the feature safe in mildly mutable environments while still absorbing repeated-probe patterns. Immutable datasets can set `info_expiry_time=None` explicitly.
 
 ### 2.3.1 Instance Sharing via `_Cached`
 
 `fsspec.spec._Cached` caches `AbstractFileSystem` instances per storage-option tuple, so two callers with the same options share one `InfoCache`. This is intentional — it is how a worker process accumulates benefit from its own previous probes — but the design must account for it:
 
 - The first constructor call wins: if one caller passes `use_info_cache=True` and another passes `use_info_cache=False` with otherwise identical options, they share the instance configured by the first call.
-- The three new options (`use_info_cache`, `info_expiry_time`, `max_info_paths`) must participate in `_Cached`'s instance key so that differing configurations yield distinct instances. The implementation will rely on `fsspec`'s existing `storage_options` hashing — these keys flow through `**storage_options` and are thus already part of the identity tuple — but the test plan (§7.1) must cover this explicitly.
+- The three new options (`use_info_cache`, `info_expiry_time`, `max_info_paths`) must participate in `_Cached`'s instance key so differing configurations yield distinct instances. They flow through `**storage_options` and are thus already part of the identity tuple — the test plan (§7.1) covers this explicitly.
 
 ### 2.3.2 Cross-Process Consistency
 
-`InfoCache` is per-process. Multi-worker `DataLoader`s, sharded training jobs, and any setup spawning subprocesses each get an independent cache, so a write in one process is invisible to cached reads in another. This is explicitly in scope for the target workloads (read-mostly manifests and dataset shards) but out of scope for mutating distributed pipelines. The default 60s TTL plus opt-in gating is the design's only safety net here; users running multi-writer workloads should either disable the cache or use a short TTL.
+`InfoCache` is per-process. Multi-worker `DataLoader`s, sharded training jobs, and any setup spawning subprocesses each get an independent cache, so a write in one process is invisible to cached reads in another. This is explicitly in scope for the target workloads (read-mostly manifests and dataset shards) but out of scope for mutating distributed pipelines. The default 60s TTL plus opt-in gating is the design's only safety net; users running multi-writer workloads should either disable the cache or use a short TTL.
 
 ### 2.4 Negative Caching
 *Decision:* **Do not cache `FileNotFoundError` [Selected]**
 
 *   **Rationale:** This remains the safest behavior in distributed and multi-writer environments. Negative caching can easily outlive the absence it observed.
-*   **Acknowledged trade-off:** ML manifest-probing workloads often issue bursty `exists()` checks against shards that do not yet exist (e.g. waiting for a producer). Without negative caching, every probe pays full RPC cost. We accept this for v1 — a short-TTL negative cache (e.g. `negative_info_expiry_time` defaulting to 0/disabled) is a clean follow-up once we have hit-rate data and a concrete user complaint to size it against.
+*   **Acknowledged trade-off:** ML manifest-probing workloads often issue bursty `exists()` checks against shards that do not yet exist (e.g. waiting for a producer). Without negative caching, every probe pays full RPC cost. We accept this for v1 — a short-TTL negative cache is a clean follow-up once we have hit-rate data and a concrete user complaint to size it against.
 
 ### 2.5 Metadata Fields
 *Decision:* **Cache the full metadata dictionary [Selected]**
 
-*   **Rationale:** A cache hit should be semantically equivalent to a successful direct metadata resolution. This includes less common fields such as user metadata, content settings, generations, and backend-specific attributes.
+*   **Rationale:** A cache hit should be semantically equivalent to a successful direct metadata resolution. This includes user metadata, content settings, generations, and backend-specific attributes.
 
-### 2.6 Cache Key Shape
-*Decision:* **Use structured hashable keys, not concatenated strings [Selected]**
+### 2.6 Key Shape
+*Decision:* **Primary cache keyed by normalized path only [Selected]**
 
-*   **Rationale:** Keys such as `(normalized_path, generation)` are collision-safe and keep invalidation logic separate from string parsing. The base API should allow each backend to define its own structured key as long as it is hashable.
+*   **Rationale:** For the common case, the cache question is “what metadata do I currently know about this path?”, not “which `(path, generation)` tuple do I have?”. Keying by path alone removes compound-key aliasing and keeps one primary slot per object.
 
-### 2.7 Invalidation Strategy
-*Decision:* **Use indexed invalidation, not full-cache scans [Selected]**
+### 2.7 Generation Semantics
+*Decision:* **Store generation in the cached value and compare on pinned probes [Selected]**
 
-*   **Rationale:** Exact-path invalidation should be O(number of cached versions for that path), and recursive invalidation should scale with indexed descendants instead of every cache entry. This requires path-aware auxiliary indexes that are pruned on every eviction and deletion.
+Pinned-generation lookups work like this:
 
-### 2.8 Concurrency Model
-*Decision:* **Document the same single-threaded expectation `dircache` already has; do not add locks [Selected]**
+- if the cached entry for `path` has `generation == requested_generation`, it is a hit
+- otherwise it is a miss and the backend refetches
 
-*   **Rationale:** `fsspec.dircache.DirCache` does not guarantee thread safety today, and `InfoCache` matches that contract. Two concurrent `_info()` coroutines will each miss, each fetch, and each populate — the last writer wins. This is a missed optimization, not a correctness bug: the values are equivalent successful-metadata fetches.
-*   **Non-goal:** request coalescing via an in-flight futures map. This is a worthwhile follow-up for high-fanout `DataLoader` cold-start, but it is orthogonal to the caching mechanism and should land separately once we have production hit-rate data to justify the extra state.
+This is the correct semantic for “I asked for version X; you only know version Y”.
 
-### 2.9 Cost Model for Prefix Index
-`_prefix_index` stores one entry per ancestor of each cached path. For a path of depth `d`, an insert touches `d+1` sets, and eviction touches the same set. With `max_paths=100000` and depth-10 paths, the index holds up to ~1M prefix→path edges. This is bounded but non-trivial; the design deliberately pays this cost to keep `pop_prefix()` and `refresh=True` invalidation sublinear in cache size. Users setting very large `max_paths` on deeply nested datasets should size RAM accordingly.
+### 2.8 Simultaneous Multi-Generation Caching
+*Decision:* **Do not support concurrent caching of multiple generations of the same path in v1 [Selected]**
 
-### 2.10 Storage-Option Naming
-The three new options are `use_info_cache`, `info_expiry_time`, `max_info_paths`. The first two mirror `DirCache`'s `use_listings_cache`/`listings_expiry_time` conventions. The third is intentionally **not** named `max_paths`: that name is already taken by `DirCache` on the same `AbstractFileSystem` instance, and reusing it would force the two caches to share a sizing knob even though their per-entry costs differ by orders of magnitude (a `DirCache` entry holds an entire listing, an `InfoCache` entry holds one object's metadata). Keeping the names distinct is a small ergonomic cost paid for clearer mental model and independent tuning.
+*   **Rationale:** This is the main trade-off of the simpler design. A workload alternating between `file@v1` and `file@v2` will miss unless the currently cached entry happens to match. That is acceptable for v1 because the dominant target workload is unpinned point-lookups. If pinned-generation reuse becomes important, a sparse `_versioned[(path, generation)]` overlay can be added later without changing the primary cache shape.
+
+### 2.9 Invalidation Strategy
+*Decision:* **Exact-path invalidation on the hot path, subtree scan only on explicit refresh/manual invalidation [Selected]**
+
+*   **Rationale:** The write path should not pay for always-on ancestor indexing. Exact invalidation is O(1). Subtree invalidation is O(n) over the primary cache, but that cost is acceptable for explicit `refresh=True` and manual subtree invalidation paths.
+
+### 2.10 Concurrency Model
+*Decision:* **Match `dircache`'s current single-process, no-locks contract [Selected]**
+
+*   **Rationale:** `InfoCache` does not add internal locks or request coalescing. Two concurrent misses may fetch and populate the same path twice; the last writer wins. This is a missed optimization, not a correctness bug.
+
+### 2.11 Comparison: Path-Keyed vs. Compound-Key + Dual-Index
+
+An earlier iteration used compound keys `(path, generation)` plus two secondary indexes (`_path_index: path → set[key]`, `_prefix_index: ancestor → set[paths]`). The switch to a single path-keyed `OrderedDict` is a deliberate simplification; this section records what was gained and what was given up so future reviewers can decide whether to re-expand.
+
+| Dimension | Path-keyed (selected) | Compound-key + dual-index |
+|---|---|---|
+| Primary structure | 1 `OrderedDict[path, entry]` | `OrderedDict[(path, gen), entry]` + `_path_index` + `_prefix_index` |
+| Entries per cached object (common case) | 1 | 2 (unqualified + generation-qualified alias) |
+| Effective capacity at `max_paths=100000` | 100k distinct objects | ~50k distinct objects (halved by alias) |
+| Exact-path invalidation | O(1) dict pop | O(versions) via `_path_index` |
+| Subtree invalidation | O(n) scan over live entries | O(matching descendants) via `_prefix_index` |
+| Bookkeeping cost per insert | O(1) | O(depth): one set update per ancestor |
+| Bookkeeping cost per eviction | O(1) | O(depth): one set update per ancestor |
+| Invariants to preserve | just dict membership | `_entries` ↔ `_path_index` ↔ `_prefix_index` must all agree |
+| Backend hook surface | `_get_info_cache_path` only | `_get_info_cache_path` + `_get_info_cache_key` |
+| Multi-generation concurrent caching | one version per path | two or more versions per path |
+| Generation-aliasing dual-insert | not needed | needed, must be cleaned up together |
+| Approximate lines of core cache code | ~60 | ~150 |
+
+**Why path-keyed wins for this workload.**
+
+1. **Hot-path simplicity.** `_info()` runs millions of times per DataLoader epoch. An O(1) lookup plus O(1) eviction step beats updating three structures per write. The ancestor-index maintenance the old design paid on every insert is pure overhead in the common case, and it scales with path depth.
+2. **Effective capacity.** The compound-key design populated both `(path, None)` and `(path, actual_gen)` on every fetch so a later pinned probe would hit. That was two slots per object. The path-keyed design covers the same semantic with one slot plus a generation-field check at lookup — so `max_paths=100000` actually holds 100k objects.
+3. **Fewer invariants, fewer bugs.** The old `_unlink` had to prune `_entries`, then `_path_index`, then (conditionally, only if no other generation for the same path was still live) each ancestor in `_prefix_index`, in the right order, under eviction and expiration and explicit invalidation. The new design has one structure; `_entries.pop(path, None)` cannot leave the cache inconsistent.
+4. **Simpler backend contract.** Backends override only `_get_info_cache_path`. The `_get_info_cache_key` hook is deleted entirely.
+
+**What we give up.**
+
+1. **Two live generations of the same path.** The compound-key design could cache `file@gen1` and `file@gen2` simultaneously. Path-keyed holds one. A workload that alternates pinned reads between two generations of the same object would see both reads miss repeatedly. Acknowledged in §2.8; addressed by the sparse overlay sketched in §3.5 if that workload ever materializes.
+2. **Sublinear subtree invalidation.** The old `pop_prefix` was O(matching descendants); the new `invalidate_subtree` is O(n) over live entries. §2.9 quantifies this (~5ms at 100k entries) and notes it runs only on explicit refresh, not on steady-state mutation.
+
+**If we ever need to revert.** The migration back to a prefix index is local: add a `_prefix_index` dict, update `set()` and invalidation to maintain it, change `invalidate_subtree` to index-driven iteration. No API changes; no caller-side changes.
 
 ---
 
@@ -115,42 +158,36 @@ We will add a new `InfoCache` implementation in `fsspec/infocache.py`.
 The implementation must satisfy all of the following:
 
 1. Preserve opt-in semantics.
-2. Support structured backend-defined keys.
-3. Keep entry count and all bookkeeping bounded to live entries only.
-4. Provide efficient exact-path invalidation.
-5. Provide efficient subtree invalidation for refresh-style operations.
+2. Keep the primary cache keyed by normalized path only.
+3. Keep entry count bounded to live cached entries only.
+4. Make exact invalidation trivial.
+5. Keep subtree invalidation off the hot mutation path.
 
 ### 3.2 Data Model
 
 Each live cache entry stores:
 
-- `key`: a structured hashable key, such as `(path, generation)`
-- `path`: the normalized logical path used for invalidation
-- `value`: the metadata dictionary
+- `path`: normalized logical path
+- `value`: metadata dictionary returned by `_info()`
 - `created`: insertion timestamp for TTL checks
 
-The cache maintains the following internal structures:
+The primary structure is:
 
-- `_entries: OrderedDict[key, CacheEntry]`
-  - Keeps LRU order and stores the canonical live entries.
-- `_path_index: dict[path, set[key]]`
-  - Maps one logical path to all cached keys for that path, including multiple generations.
-- `_prefix_index: dict[prefix, set[path]]`
-  - Maps a directory prefix to descendant cached paths for efficient subtree invalidation.
+- `_entries: OrderedDict[path, CacheEntry]`
+  - The single source of truth for live cached entries and LRU order.
 
-All three structures only contain live entries. Whenever an entry expires, is evicted, or is explicitly invalidated, all index references are removed in the same operation.
+There is no `_path_index` and no `_prefix_index`.
 
 ### 3.3 Code Sketch (`fsspec/infocache.py`)
 
 ```python
 import time
 from collections import OrderedDict
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 
 
 @dataclass
 class CacheEntry:
-    path: str
     value: dict
     created: float
 
@@ -174,141 +211,87 @@ class InfoCache:
         self.info_expiry_time = info_expiry_time
         self.max_paths = max_paths
         self._entries = OrderedDict()
-        self._path_index = {}
-        self._prefix_index = {}
         self.stats = CacheStats()
-
-    def _prefixes(self, path):
-        # Normalize: strip leading/trailing slashes so we never yield an
-        # empty-string prefix (which would alias unrelated subtrees) or
-        # synthesize a leading-slash prefix that no insert path uses.
-        path = path.strip("/")
-        if not path:
-            return
-        parts = path.split("/")
-        for i in range(1, len(parts)):
-            yield "/".join(parts[:i])
-        yield path
 
     def _is_expired(self, entry):
         if self.info_expiry_time is None:
             return False
         return (time.time() - entry.created) > self.info_expiry_time
 
-    def _unlink(self, key, entry):
-        self._entries.pop(key, None)
-
-        keys = self._path_index.get(entry.path)
-        if keys is not None:
-            keys.discard(key)
-            if not keys:
-                self._path_index.pop(entry.path, None)
-
-        # Only prune prefix references when no other generation for this path
-        # is still live; multiple keys can share one path entry.
-        if entry.path in self._path_index:
-            return
-        for prefix in self._prefixes(entry.path):
-            paths = self._prefix_index.get(prefix)
-            if paths is None:
-                continue
-            paths.discard(entry.path)
-            if not paths:
-                self._prefix_index.pop(prefix, None)
-
-    def __getitem__(self, key):
-        """Look up a cached entry. Raises KeyError on miss or expiration.
-
-        Gated on use_info_cache: if the flag is flipped off after entries were
-        populated (e.g. via direct attribute assignment for testing or runtime
-        opt-out), every lookup misses. set() is also gated, so a freshly
-        disabled cache cannot grow."""
+    def get(self, path):
         if not self.use_info_cache:
             self.stats.misses += 1
-            raise KeyError(key)
+            raise KeyError(path)
+
         try:
-            entry = self._entries[key]
+            entry = self._entries[path]
         except KeyError:
             self.stats.misses += 1
             raise
         if self._is_expired(entry):
-            self._unlink(key, entry)
+            self._entries.pop(path, None)
             self.stats.expirations += 1
             self.stats.misses += 1
-            raise KeyError(key)
-        self._entries.move_to_end(key)
+            raise KeyError(path)
+
+        self._entries.move_to_end(path)
         self.stats.hits += 1
         return entry.value
 
-    def get(self, key, default=None):
-        """Dict-style non-raising lookup."""
-        try:
-            return self[key]
-        except KeyError:
-            return default
-
-    def set(self, key, path, value):
+    def set(self, path, value):
         if not self.use_info_cache:
             return
 
-        now = time.time()
-        old = self._entries.get(key)
-        if old is not None:
-            self._unlink(key, old)
-
-        self._entries[key] = CacheEntry(path=path, value=value, created=now)
-        self._entries.move_to_end(key)
-
-        self._path_index.setdefault(path, set()).add(key)
-        for prefix in self._prefixes(path):
-            self._prefix_index.setdefault(prefix, set()).add(path)
+        self._entries[path] = CacheEntry(value=value, created=time.time())
+        self._entries.move_to_end(path)
 
         while self.max_paths and len(self._entries) > self.max_paths:
-            old_key, old_entry = self._entries.popitem(last=False)
-            self._unlink(old_key, old_entry)
+            self._entries.popitem(last=False)
             self.stats.evictions += 1
 
-    def pop_key(self, key):
-        entry = self._entries.get(key)
-        if entry is not None:
-            self._unlink(key, entry)
+    def invalidate(self, path):
+        self._entries.pop(path, None)
 
-    def pop_path(self, path):
-        for key in list(self._path_index.get(path, ())):
-            self.pop_key(key)
-
-    def pop_prefix(self, prefix):
-        for path in list(self._prefix_index.get(prefix, ())):
-            self.pop_path(path)
+    def invalidate_subtree(self, prefix):
+        if not prefix:
+            # Empty prefix would otherwise match every path; require clear()
+            # for full wipes so "nuke everything" is always an explicit call.
+            return
+        prefix = prefix.rstrip("/")
+        if not prefix:
+            return
+        child_prefix = prefix + "/"
+        to_delete = [
+            path
+            for path in self._entries
+            if path == prefix or path.startswith(child_prefix)
+        ]
+        for path in to_delete:
+            self._entries.pop(path, None)
 
     def clear(self):
         self._entries.clear()
-        self._path_index.clear()
-        self._prefix_index.clear()
 ```
-
-Notes on the API shape:
-
-- `__getitem__` is the authoritative lookup because it surfaces miss vs expiration vs hit distinctly through the counters. `get()` is a thin dict-style wrapper for callers that prefer a non-raising probe.
-- `CacheStats` gives operators a single attribute (`fs.infocache.stats`) to observe hit rate in production. No logging or metric-system coupling is built in; downstream instrumentation is free to sample `stats` on whatever cadence it wants. This is the minimum needed to validate the feature works under real workloads (§7.4).
 
 ### 3.4 Memory-Bound Guarantees
 
-The important guarantee is that there is no stale bookkeeping:
+The memory-bound guarantee is simple:
 
-- evicted entries are removed from `_entries`, `_path_index`, and `_prefix_index`
-- expired entries are removed from all structures on first access
-- overwritten entries unlink old state before inserting new state
+- one live primary cache entry per cached path
+- no side indexes that can outlive evictions
+- expired entries are removed from `_entries` on first access
 
-This keeps total bookkeeping proportional to live cached entries rather than historical entries.
+This keeps total bookkeeping proportional to live cached entries only.
+
+### 3.5 Future Extension: Sparse Version Overlay
+
+If pinned-generation workloads prove important, a sparse `_versioned[(path, generation)]` overlay can be added later. It would be populated only when a caller pins a generation different from the current primary entry. This is explicitly deferred from v1 to keep the implementation small.
 
 ---
 
 ## 4. Integrating with `fsspec` and `GCSFileSystem`
 
 ### 4.1 Base `AbstractFileSystem` Update
-
-`AbstractFileSystem` provisions `InfoCache` and exposes backend hooks for both key derivation and invalidation path normalization.
 
 Because this feature is implemented in `fsspec`, the design must account for the inherited method surface in `fsspec.spec.AbstractFileSystem` and `fsspec.asyn.AsyncFileSystem`, not just backend overrides:
 
@@ -322,11 +305,13 @@ Because this feature is implemented in `fsspec`, the design must account for the
 
 That means:
 
-1. Backends that override `_info()` or `info()` can pick up `InfoCache` benefits through those existing inherited methods.
-2. The base class contract must define where cache lookup/population belongs so backends do not reimplement it inconsistently.
-3. `invalidate_cache()` changes must preserve the existing transaction bookkeeping in `AbstractFileSystem.invalidate_cache()`.
+1. Backends that override `_info()` or `info()` can pick up `InfoCache` benefits through those inherited methods.
+2. The base class contract must define path normalization and explicit info-cache invalidation helpers.
+3. `invalidate_cache()` must keep its existing transaction bookkeeping role.
 
-The snippet below shows **additions** to the existing `AbstractFileSystem` class, not a replacement. The real `__init__` already sets `_intrans`, `_transaction`, `_invalidated_caches_in_transaction`, and `self.dircache = DirCache(**storage_options)` (see [fsspec/spec.py:156](.venv/lib/python3.13/site-packages/fsspec/spec.py:156)); the new lines are inserted alongside that existing setup. Three new `storage_options` keys are popped (not `get`) so they do not leak into backend-forwarded kwargs.
+### 4.2 Base Hooks and Helpers
+
+`AbstractFileSystem` provisions `InfoCache` and exposes path-level helpers.
 
 ```python
 # In fsspec/spec.py — additions to the existing AbstractFileSystem class
@@ -335,7 +320,7 @@ from fsspec.infocache import InfoCache
 
 class AbstractFileSystem:
     def __init__(self, *args, **storage_options):
-        # ... existing init body (DirCache, _intrans, _transaction, ...) ...
+        # ... existing init body ...
         use_info_cache = storage_options.pop("use_info_cache", False)
         info_expiry_time = storage_options.pop("info_expiry_time", 60)
         max_info_paths = storage_options.pop("max_info_paths", 100000)
@@ -345,57 +330,44 @@ class AbstractFileSystem:
             max_paths=max_info_paths,
         )
 
-    def _get_info_cache_key(self, path, **kwargs):
-        path = self._strip_protocol(path).rstrip("/")
-        return (path, None)
-
     def _get_info_cache_path(self, path, **kwargs):
         return self._strip_protocol(path).rstrip("/")
 
+    def invalidate_info(self, path, **kwargs):
+        self.infocache.invalidate(self._get_info_cache_path(path, **kwargs))
+
+    def invalidate_info_subtree(self, path, **kwargs):
+        self.infocache.invalidate_subtree(self._get_info_cache_path(path, **kwargs))
+
+    def clear_info_cache(self):
+        self.infocache.clear()
+
     def invalidate_cache(self, path=None):
-        # During a transaction, defer ALL cache work to end_transaction so
-        # mid-transaction reads can still see the pre-mutation state. The
-        # existing base impl records the path and returns; replay at commit
-        # time runs invalidate_cache(path) again with _intrans=False, which
-        # then takes the eager branch below.
-        if self._intrans:
-            self._invalidated_caches_in_transaction.append(path)
-            return
+        # ... existing transaction bookkeeping and dircache handling ...
         if path is None:
+            # Full wipe: the no-arg form is semantically "clear all cached
+            # state" — pair dircache clear with infocache clear so callers
+            # don't have to know about two buttons.
             self.infocache.clear()
-        else:
-            self.infocache.pop_prefix(self._get_info_cache_path(path))
+        # Note: on a path argument, do NOT touch infocache — see §4.3.
 ```
 
-**Ownership contract.** The base `invalidate_cache` is the single source of truth for `infocache` eviction *and* for the transaction-deferral bookkeeping. Subclasses that override `invalidate_cache` MUST call `super().invalidate_cache(path)` first, then do their own `dircache`/backend-specific work. They MUST gate any backend work on `not self._intrans` themselves (the base call returns early without raising during a transaction, but it does not signal "I deferred this" to the caller). They MUST NOT call `self.infocache.clear()` or `pop_prefix()` themselves — otherwise we get double-eviction and divergent behavior across backends. The `gcsfs` override in §6.2 follows this rule.
+### 4.3 Base `invalidate_cache()` Contract
 
-### 4.2 Cache Key Formulation in `gcsfs`
+`AbstractFileSystem.invalidate_cache(path=None)` keeps its existing transaction behavior and listing-cache role. It intentionally does **not** auto-evict `InfoCache` on a `path` argument, because many backends already call `invalidate_cache(parent)` on the mutation path for `dircache`, and auto-evicting would turn every write into an O(n) subtree scan.
 
-`gcsfs` uses generation-aware structured keys. It inherits `_get_info_cache_path` unchanged from the base class (the base already returns `self._strip_protocol(path).rstrip("/")`, which is what gcsfs wants) and only overrides the key derivation.
+The specific semantics are:
 
-```python
-# In gcsfs/core.py
+- `invalidate_cache(path)` — unchanged. Listing-cache invalidation and transaction bookkeeping only. Does not touch `InfoCache`.
+- `invalidate_cache(None)` — full wipe. Callers invoking the no-arg form expect a "nuke everything" button, so the base implementation ALSO calls `self.infocache.clear()` here. This is a one-shot O(n) that users already accept when they ask for a global invalidation.
+- `invalidate_info(path)` — the hot-path exact invalidation primitive for mutations.
+- `invalidate_info_subtree(path)` — used only for explicit refresh/manual subtree invalidation.
 
-class GCSFileSystem(asyn.AsyncFileSystem):
-    def _get_info_cache_key(self, path, generation=None, **kwargs):
-        path = self._get_info_cache_path(path)
-        _, _, path_generation = self.split_path(path)
-        resolved_generation = _coalesce_generation(generation, path_generation)
-        return (path, resolved_generation)
-```
+The asymmetry between `invalidate_cache(path)` (leaves infocache alone) and `invalidate_cache(None)` (clears infocache) is deliberate: the no-arg form is rare and semantically "clear all state"; the path form is frequent and would be prohibitively expensive if it scanned. Callers doing a targeted refresh should pair `invalidate_cache(path)` with an explicit `invalidate_info_subtree(path)` — see §6.3.
 
-This keeps the key collision-safe and allows exact-path invalidation to remove all generations without guessing from a string prefix.
+### 4.4 Cache Key Formulation in `gcsfs`
 
-#### 4.2.1 Generation Aliasing
-
-A caller may first issue `info("gs://bucket/file")` with no generation and later issue `info("gs://bucket/file", generation="123")` with the generation that the first call resolved. Naively these produce different keys — `(path, None)` and `(path, "123")` — so the second call misses and refetches even though the server would return identical bytes.
-
-To close this hole, `_info()` populates **both** keys on a successful single-object fetch whenever the response carries a concrete generation:
-
-- The unqualified key `(path, None)` — satisfies future unqualified probes.
-- The qualified key `(path, "123")` — satisfies future probes that pin the generation.
-
-Both entries point at the same dict (no copy), both are tracked in `_path_index` and `_prefix_index`, and invalidation by path (via `pop_path`) removes both together. If the response has no generation field — which should not happen for GCS objects but is handled defensively — only the unqualified key is populated.
+`gcsfs` inherits `_get_info_cache_path()` unchanged. No generation-aware key helper is needed in v1 because the primary cache is path-keyed.
 
 ---
 
@@ -411,12 +383,14 @@ async def _info(self, path, generation=None, **kwargs):
 
     bucket, key, path_generation = self.split_path(path)
     resolved_generation = _coalesce_generation(generation, path_generation)
-
     cache_path = self._get_info_cache_path(path, generation=generation)
-    cache_key = self._get_info_cache_key(path, generation=generation)
 
     try:
-        return self.infocache[cache_key]
+        cached = self.infocache.get(cache_path)
+        if resolved_generation is None:
+            return cached
+        if cached.get("generation") == resolved_generation:
+            return cached
     except KeyError:
         pass
 
@@ -428,11 +402,8 @@ async def _info(self, path, generation=None, **kwargs):
             if entry["name"].rstrip("/") == name and (
                 not resolved_generation or entry.get("generation") == resolved_generation
             ):
-                # Promote the matched entry into infocache so the *next* point
-                # lookup skips even the parent_cache scan. We promote one entry
-                # (the one the caller asked about), not the whole listing —
-                # see §1 for the bulk-import rationale.
-                self._populate_info_cache(cache_path, cache_key, entry)
+                if resolved_generation is None and not _is_directory_marker(entry):
+                    self.infocache.set(cache_path, entry)
                 return entry
 
     if self._ls_from_cache(path):
@@ -455,40 +426,30 @@ async def _info(self, path, generation=None, **kwargs):
         try:
             result = await get_object_task
             if not _is_directory_marker(result):
-                self._populate_info_cache(cache_path, cache_key, result)
+                if resolved_generation is None:
+                    self.infocache.set(cache_path, result)
                 return result
         except FileNotFoundError:
             pass
 
         return await get_directory_info_task
-
-
-def _populate_info_cache(self, cache_path, cache_key, result):
-    """Insert under both the requested key and the generation-qualified key
-    so later probes that pin the generation still hit. See §4.2.1."""
-    self.infocache.set(cache_key, cache_path, result)
-    actual_generation = result.get("generation")
-    if actual_generation is not None and cache_key[1] != actual_generation:
-        aliased_key = (cache_path, actual_generation)
-        self.infocache.set(aliased_key, cache_path, result)
 ```
 
 Notes:
 
-- The cache is only populated from successful single-object file metadata results.
-- Directory placeholders and listing-derived entries are not inserted into `InfoCache`.
-- Opt-in default means this path is inert unless the user explicitly enables it.
-- `_is_directory_marker(result)` is an existing helper in `gcsfs/core.py` that detects zero-byte trailing-slash "folder" objects; reusing it avoids caching synthesized directory entries as if they were regular files.
-- `info()` returns the cached dict by reference. Callers that mutate the dict would corrupt shared state; the existing `_info()` contract already treats these dicts as read-only, and `checksum(path) = tokenize(info(path))` stays deterministic because identical references tokenize identically.
+- unpinned lookups can populate and hit the primary cache
+- pinned-generation lookups can hit the primary cache only if the cached value's `generation` matches
+- pinned-generation misses refetch, but do not overwrite the primary path slot in v1
+- directory placeholders are not inserted into `InfoCache`
 
 ### 5.1 Required `fsspec` Method-Surface Updates
 
-The `fsspec` design should explicitly document which methods change semantically or operationally once `InfoCache` exists.
+The `fsspec` design should explicitly document which methods benefit automatically once a backend adopts `InfoCache`:
 
 #### Synchronous base methods in `fsspec.spec.AbstractFileSystem`
 
 - `info(path, **kwargs)`
-  - No mandatory generic cache insertion is required for listing-only backends, but the contract should document that a backend override may consult and populate `InfoCache` if it has a true single-object metadata fast path.
+  - No mandatory generic cache insertion is required for listing-only backends, but a backend override may consult and populate `InfoCache` if it has a true single-object metadata fast path.
 - `exists(path, **kwargs)`
   - Benefits automatically whenever `info()` benefits.
 - `size(path)`
@@ -507,74 +468,48 @@ The `fsspec` design should explicitly document which methods change semantically
 - `_size(path)`
   - Benefits automatically whenever `_info()` benefits.
 
-#### Base invalidation contract
-
-- `AbstractFileSystem.invalidate_cache(path=None)` must remain part of the design because it records deferred invalidations during transactions.
-- Any backend override of `invalidate_cache()` must call the parent implementation before or alongside backend-specific cache eviction so transaction semantics remain intact.
-
 ---
 
 ## 6. Cache Consistency and Invalidation Surface
 
-`InfoCache` adds a second metadata state surface beside `dircache`, so every metadata-mutating path must either invalidate exact object entries or update them intentionally. This design chooses invalidation, not write-through updates.
+`InfoCache` adds a second metadata state surface beside `dircache`, so every metadata-mutating path must explicitly invalidate exact object entries. This design chooses invalidation, not write-through updates.
 
-### 6.1 `invalidate_info` Helper
+### 6.1 Exact Invalidations on the Mutation Path
 
-```python
-def invalidate_info(self, path, generation=None):
-    cache_path = self._get_info_cache_path(path, generation=generation)
-    if generation is not None:
-        cache_key = self._get_info_cache_key(path, generation=generation)
-        self.infocache.pop_key(cache_key)
-    else:
-        self.infocache.pop_path(cache_path)
-```
-
-This gives exact-object invalidation without scanning the entire cache.
-
-### 6.2 `invalidate_cache` Integration
-
-`invalidate_cache(path)` delegates info-cache eviction to the base class per the ownership contract in §4.1, and only does `dircache` work locally.
-
-```python
-def invalidate_cache(self, path=None):
-    super().invalidate_cache(path)  # handles infocache + transaction bookkeeping
-
-    # super() deferred the work during a transaction; do the same here so
-    # dircache and infocache stay in lockstep. end_transaction replays with
-    # _intrans=False, which falls through to the eager branch below.
-    if self._intrans:
-        return
-
-    if path is None:
-        self.dircache.clear()
-        return
-
-    path = self._get_info_cache_path(path)
-    while path:
-        self.dircache.pop(path, None)
-        parent = self._parent(path)
-        if parent == path:  # root-of-protocol fixed point; avoid infinite loop
-            break
-        path = parent
-```
-
-This keeps `refresh=True` behavior aligned with the metadata cache without a full-cache scan, while preserving `fsspec` transaction bookkeeping. The fixed-point guard on `_parent` is defensive — some fsspec-derived backends return the same string for the root of their protocol rather than an empty string, and without the guard the loop would spin forever.
-
-### 6.3 Required Updates in `gcsfs/core.py`
-
-The following methods must call `invalidate_info(...)` in addition to existing listing-cache invalidation. Line numbers are against the tip of `main` as of this plan and are a checklist for review — they will drift once edits land:
+Use `invalidate_info(path)` for the following mutators. Line numbers are against the tip of `main` as of this plan and are a checklist for review — they will drift once edits land:
 
 - `_rm_file(path, ...)` — [gcsfs/core.py:1425](gcsfs/core.py:1425)
 - `_rm_files(paths, ...)` — [gcsfs/core.py:1435](gcsfs/core.py:1435)
-- `_mv_file_cache_update(path1, path2, ...)` — [gcsfs/core.py:1386](gcsfs/core.py:1386)
-- `_cp_file(path1, path2, ...)` — [gcsfs/core.py:1352](gcsfs/core.py:1352)
+- `_mv_file_cache_update(path1, path2, ...)` — [gcsfs/core.py:1386](gcsfs/core.py:1386) (invalidate both source and destination)
+- `_cp_file(path1, path2, ...)` — [gcsfs/core.py:1352](gcsfs/core.py:1352) (invalidate destination)
 - `_put_file(lpath, rpath, ...)` — [gcsfs/core.py:1627](gcsfs/core.py:1627)
 - `_pipe_file(path, ...)` — [gcsfs/core.py:1569](gcsfs/core.py:1569)
 - `_merge(path, ...)` — [gcsfs/core.py:1321](gcsfs/core.py:1321)
 - `_setxattrs(path, ...)` — [gcsfs/core.py:1258](gcsfs/core.py:1258)
 
-**Invalidation ordering.** `invalidate_info(path)` runs **after** the mutating RPC returns successfully, for the same reason the existing `dircache` invalidation does: invalidating before the RPC would drop a valid entry even if the mutation fails and nothing actually changed. If the RPC raises, the call site does not invalidate — the cached metadata still reflects reality. For `_cp_file` and `_mv_file_cache_update`, invalidate destination after success; for `_mv_file_cache_update` also invalidate source after success. This is the same contract used by `dircache` updates today and does not introduce a new ordering surface.
+**Invalidation ordering.** `invalidate_info(path)` runs only **after** the mutating RPC returns successfully, matching the current `dircache` invalidation ordering. If the RPC raises, the call site does not invalidate — the cached metadata still reflects reality, and pre-RPC invalidation would drop a valid entry even when nothing actually changed.
+
+### 6.2 Subtree Invalidations on Explicit Refresh Paths
+
+Use `invalidate_info_subtree(path)` only when the caller explicitly asks for a subtree refresh, for example:
+
+- `ls(path, refresh=True)`
+- `info(path, refresh=True)` if supported by the backend API surface
+- manual refresh APIs that are semantically recursive
+
+This keeps O(n) subtree scans off the hot write path.
+
+### 6.3 `gcsfs.invalidate_cache()` Integration
+
+`gcsfs.invalidate_cache(path)` should continue to handle `dircache` the way it does today. It should not automatically evict `InfoCache`.
+
+Instead:
+
+- write and metadata mutation paths call `invalidate_info(path)`
+- refresh/manual subtree paths call both `invalidate_cache(path)` and `invalidate_info_subtree(path)`
+- global clear paths call both `invalidate_cache(None)` and `clear_info_cache()`
+
+This preserves the current `dircache` semantics while keeping info-cache subtree scans rare.
 
 ### 6.4 Required Updates in `extended_gcsfs.py`
 
@@ -592,23 +527,24 @@ Required coverage includes (line numbers against the tip of `main`):
   - Invalidate destination info entry after successful copy.
 - `ExtendedGCSFileSystem._merge(...)` — [gcsfs/extended_gcsfs.py:1416](gcsfs/extended_gcsfs.py:1416)
   - Invalidate destination info entry after successful compose/merge.
-- Any future mutating override added in `extended_gcsfs.py`
-  - Must be included in the metadata-cache audit as part of code review.
+- Any future mutating override added in `extended_gcsfs.py` must be included in the metadata-cache audit as part of code review.
 
 ### 6.5 Required Updates in `fsspec`
 
-Since the implementation is `fsspec`-first, the design must explicitly cover these base-library changes too:
+Since the implementation is `fsspec`-first, the design must explicitly cover these base-library changes:
 
 - `fsspec.spec.AbstractFileSystem.__init__`
   - Provision `self.infocache`.
 - `fsspec.spec.AbstractFileSystem`
-  - Add `_get_info_cache_key(...)`.
-- `fsspec.spec.AbstractFileSystem`
   - Add `_get_info_cache_path(...)`.
+- `fsspec.spec.AbstractFileSystem`
+  - Add `invalidate_info(...)`.
+- `fsspec.spec.AbstractFileSystem`
+  - Add `invalidate_info_subtree(...)`.
+- `fsspec.spec.AbstractFileSystem`
+  - Add `clear_info_cache()`.
 - `fsspec.spec.AbstractFileSystem.invalidate_cache(...)`
-  - Preserve transaction bookkeeping and define how subclasses should integrate info-cache eviction.
-- `fsspec.asyn.AsyncFileSystem`
-  - No direct behavioral rewrite is required for `_exists()` and `_size()`, but the design should call out that they automatically benefit through `_info()`.
+  - Keep transaction bookkeeping unchanged; do not add automatic info-cache subtree eviction.
 
 Backends that only implement `ls()` and inherit the default `info()` are not required to adopt `InfoCache` immediately. The primary adoption path is for backends with a true object-level metadata hook (`_info()` or specialized `info()`).
 
@@ -616,13 +552,13 @@ Backends that only implement `ls()` and inherit the default `info()` are not req
 
 Because the abstraction lives in `fsspec` but the consumer is `gcsfs`, landing this feature requires a coordinated sequence:
 
-1. **fsspec PR.** Land `fsspec/infocache.py`, the base-class hooks (`_get_info_cache_key`, `_get_info_cache_path`, `infocache` attribute), and the `invalidate_cache` integration. Include unit tests from §7.1.
+1. **fsspec PR.** Land `fsspec/infocache.py`, the base-class hook and helpers (`_get_info_cache_path`, `invalidate_info`, `invalidate_info_subtree`, `clear_info_cache`, `self.infocache`), and the updated `invalidate_cache(None)` behavior. Include unit tests from §7.1.
 2. **fsspec release.** Wait for an `fsspec` release that contains the changes, or pin a specific `fsspec` commit in the gcsfs dev environment for CI while waiting.
-3. **gcsfs version bump.** Raise the `fsspec` floor in `gcsfs/pyproject.toml` (and `setup.py` if present) to the release from step 2.
-4. **gcsfs integration PR.** Add `_get_info_cache_key` override, update `_info()` for cache lookup and generation-aliasing population, add `invalidate_info` helper, update the mutation surface (§6.3 and §6.4). Include integration tests from §7.2 and §7.3.
+3. **gcsfs version bump.** Raise the `fsspec` floor in `gcsfs/pyproject.toml` to the release from step 2.
+4. **gcsfs integration PR.** Update `_info()` for cache lookup and pinned-probe semantics; wire `invalidate_info` into the mutation surface (§6.1 and §6.4). Include integration tests from §7.2 and §7.3.
 5. **Opt-in rollout.** Feature is off by default after step 4. Internal canary workloads flip `use_info_cache=True` and surface `fs.infocache.stats` for hit-rate validation. Default flip is a separate decision gated on observed hit rate and zero regression reports.
 
-**Fallback if upstream review stalls.** If the fsspec PR is blocked or reshaped in ways that delay step 2 beyond the target quarter, implement the cache inside `gcsfs` under `gcsfs/_infocache.py` with the same API, and wire the base-class hooks as local overrides on `GCSFileSystem`. The internal API stays identical, so migrating to upstream `fsspec.infocache` later is a module rename plus removing the local copy.
+**Fallback if upstream review stalls.** If the fsspec PR is blocked or reshaped in ways that delay step 2, implement the cache inside `gcsfs` under `gcsfs/_infocache.py` with the same API, and provide the helpers as local overrides on `GCSFileSystem`. The internal API stays identical, so migrating to upstream `fsspec.infocache` later is a module rename plus removing the local copy.
 
 ---
 
@@ -633,33 +569,30 @@ Testing should validate both cache mechanics and repository-specific integration
 ### 7.1 Unit Tests (`fsspec/tests/test_infocache.py`)
 
 1. **Entry-count eviction:** Create `InfoCache(max_paths=3)`, insert 4 live entries, assert only 3 remain and the least recently used entry is gone.
-2. **TTL expiration:** Create `InfoCache(info_expiry_time=1)`, insert one item, sleep 1.1s, assert lookup raises `KeyError` and all indexes are cleaned.
-3. **Structured keys:** Insert two entries for the same path with keys like `("bucket/file", "111")` and `("bucket/file", "222")`, assert both coexist.
-4. **Exact-path invalidation:** Call `pop_path("bucket/file")`, assert all generations for that path are removed and unrelated paths remain.
-5. **Prefix invalidation:** Cache entries under `bucket/a/...` and `bucket/b/...`, call `pop_prefix("bucket/a")`, assert only `bucket/a` descendants are removed.
-6. **Bounded bookkeeping:** Repeatedly insert and evict entries, then assert `_entries`, `_path_index`, and `_prefix_index` contain no references to dead entries.
-7. **CacheStats counters:** Insert one entry, assert a hit increments `stats.hits`, a miss on a different key increments `stats.misses`, an evicted insert increments `stats.evictions`, and a lookup of an expired entry increments `stats.expirations`.
-8. **`get` non-raising wrapper:** Assert `cache.get(missing_key)` returns `None` and `cache.get(missing_key, sentinel)` returns `sentinel`, while `cache[missing_key]` raises `KeyError`.
-9. **`_Cached` option participation:** Instantiate `AbstractFileSystem` twice with different `use_info_cache`/`info_expiry_time`/`max_info_paths` tuples through `fsspec.filesystem(...)` and assert two distinct instances are returned (storage-option hashing must route them separately).
-10. **`use_info_cache` runtime gate:** Insert an entry while enabled, flip `cache.use_info_cache = False`, assert subsequent `cache[key]` raises `KeyError` and `stats.misses` increments — covers the defensive gate in `__getitem__` (§3.3).
-11. **Path-normalization edge cases for `_prefixes`:** Insert entries with paths `"a"`, `"/a/b"`, `"a/b/"`, and `""` (the last is a no-op). Assert `pop_prefix("")` is a no-op (does not nuke unrelated entries) and `pop_prefix("a")` removes both `"a"` and `"a/b"` regardless of leading/trailing slashes — guards against the empty-string-prefix aliasing bug.
+2. **TTL expiration:** Create `InfoCache(info_expiry_time=1)`, insert one item, sleep 1.1s, assert lookup raises `KeyError` and the entry is removed.
+3. **Path-keyed overwrite:** Insert two values for the same path, assert the second replaces the first and cache length stays 1.
+4. **Exact invalidation:** Cache entries for `a/x` and `a/y`, call `invalidate("a/x")`, assert only `a/x` is removed.
+5. **Subtree invalidation:** Cache entries under `a/...` and `b/...`, call `invalidate_subtree("a")`, assert only `a` descendants are removed.
+6. **Bounded bookkeeping:** Repeatedly insert and evict entries, then assert only live entries remain in `_entries`.
+7. **Stats counters:** Assert hits, misses, evictions, and expirations update as expected.
 
 ### 7.2 Integration Tests (`gcsfs/tests/test_core.py`)
 
 1. **Default-off behavior:** Construct `GCSFileSystem()` without `use_info_cache=True` and assert repeated direct `info()` calls still hit the network path.
-2. **Opt-in cache hit:** Construct with `use_info_cache=True`, call `info(path)` twice, assert the second call bypasses the object metadata API.
-3. **Listing does not populate info cache:** Call `ls(dir_path)` and confirm `infocache` stays empty.
-4. **Generation separation:** Cache `info(path, generation="111")` and `info(path, generation="222")`, assert separate cache entries exist.
-5. **Generation aliasing:** Call `info(path)` first with no generation, assert the returned metadata carries generation `G`, then call `info(path, generation=G)` and assert it is a cache hit (no new metadata RPC). Covers §4.2.1.
-6. **Mutation invalidation:** Verify `_rm_file`, `_rm_files`, `_mv_file_cache_update`, `_cp_file`, `_put_file`, `_pipe_file`, `_merge`, and `_setxattrs` invalidate the expected info entries.
-7. **Mutation-failure ordering:** Force an RPC failure in `_rm_file` (e.g. 412 precondition-failed) and assert the pre-existing cached info entry is still present — invalidation runs only on success (§6.3).
-8. **Refresh invalidation:** Cache entries under a subtree, call `ls(path, refresh=True)` or equivalent invalidation path, assert subtree info entries are evicted.
-9. **Ownership contract:** Call `invalidate_cache(path)` on a `GCSFileSystem` with cached info entries at and under `path`; assert they are evicted exactly once (verified by `stats.evictions` delta) — the subclass override must not double-evict.
-10. **Parent_cache promotion:** Pre-populate `dircache` for `parent` via `ls(parent)`, then call `info(parent/child)` — assert `infocache` now contains an entry for `parent/child`, and a second `info(parent/child)` call is served from `infocache` (no parent_cache scan, verified by `stats.hits` delta). Covers §1 / §5 single-entry promotion.
-11. **Bulk `ls()` does not populate infocache:** Call `ls(parent)` returning N entries, assert `len(infocache._entries) == 0` immediately after — only point lookups via `info()` populate.
-12. **`find()` / `walk()` do not populate infocache:** Run `find(parent)` and `list(walk(parent))`, assert `infocache` remains empty regardless of how many entries those traversals enumerate.
-13. **Non-FileNotFoundError propagation:** Stub `_get_object` to raise `OSError("500 Internal")` on the first call; assert `_info()` propagates the error (does **not** swallow), `infocache` is unchanged, and the existing parent-fallback logic is unaffected. Distinguishes "absent" from "transient backend failure" — only the former is silently bypassed by the cache miss path.
-14. **Transaction-deferred invalidation:** Open `with fs.transaction:` and pre-populate an info entry; mid-transaction call `_rm_file(path)`; assert the cached entry is **still present** during the transaction and is evicted exactly once at commit (verified by `stats.evictions` delta of 1). Covers the deferred-eviction contract in §4.1 / §6.2.
+2. **Opt-in cache hit:** Construct with `use_info_cache=True`, call unpinned `info(path)` twice, assert the second call bypasses the object metadata API.
+3. **Listing does not bulk-populate info cache:** Call `ls(dir_path)` and confirm `infocache` stays empty.
+4. **Parent-cache promotion:** Pre-populate `dircache` via `ls(parent)`, then call unpinned `info(parent/child)` and assert one entry is promoted into `infocache`.
+5. **Pinned-generation primary hit:** Cache unpinned `info(path)` returning generation `G`, then call `info(path, generation=G)` and assert it hits the primary cache.
+6. **Pinned-generation mismatch miss:** Cache unpinned `info(path)` returning generation `G1`, then call `info(path, generation=G2)` and assert it misses and refetches.
+7. **Mutation invalidation:** Verify `_rm_file`, `_rm_files`, `_mv_file_cache_update`, `_cp_file`, `_put_file`, `_pipe_file`, `_merge`, and `_setxattrs` invalidate the expected exact info entries.
+8. **Refresh invalidation:** Cache entries under a subtree, run an explicit refresh path, and assert `invalidate_info_subtree()` removes the expected entries.
+
+### 7.3 Integration Tests (`gcsfs/tests/test_extended_gcsfs*.py`)
+
+1. **HNS move path:** Exercise `extended_gcsfs._mv_file_cache_update` and assert source and destination info entries are invalidated even when listing cache is updated in place.
+2. **Zonal put path:** Exercise `extended_gcsfs._put_file` and assert destination info cache is invalidated after upload.
+3. **Zonal pipe path:** Exercise `extended_gcsfs._pipe_file` and assert destination info cache is invalidated after upload.
+4. **Extended copy/merge paths:** Assert `_cp_file` and `_merge` invalidate destination info entries on success.
 
 ### 7.4 Hit-Rate Benchmark (`gcsfs/tests/benchmarks/test_infocache_hitrate.py`)
 
@@ -669,30 +602,34 @@ A deterministic microbenchmark, runnable locally and in CI in `gcsfs` mock mode,
 2. Construct with `use_info_cache=True`; issue the same workload; count metadata RPCs and assert count ≈ N (first-touch only) and `fs.infocache.stats.hits == N * (K - 1)`.
 3. Record the speedup and counter deltas in the benchmark output so regressions are visible in PR diffs. This is the primary signal for "the feature is doing what we said it would."
 
-### 7.3 Integration Tests (`gcsfs/tests/test_extended_gcsfs*.py`)
+### 7.5 Additional Unit-Test Cases
 
-1. **HNS move path:** Exercise `extended_gcsfs._mv_file_cache_update` and assert source and destination info entries are invalidated even when listing cache is updated in place.
-2. **Zonal put path:** Exercise `extended_gcsfs._put_file` and assert destination info cache is invalidated after upload.
-3. **Zonal pipe path:** Exercise `extended_gcsfs._pipe_file` and assert destination info cache is invalidated after upload.
+Extend §7.1 with:
+
+8. **`_Cached` option participation:** Instantiate `AbstractFileSystem` twice through `fsspec.filesystem(...)` with differing `use_info_cache`/`info_expiry_time`/`max_info_paths` tuples and assert two distinct instances are returned (storage-option hashing must route them separately).
+9. **`invalidate_subtree` empty-prefix guard:** Call `invalidate_subtree("")` and `invalidate_subtree("/")` on a non-empty cache; assert both are no-ops (only `clear()` wipes everything).
+10. **`invalidate_subtree` sibling isolation:** Cache `bucket/a` and `bucket/abc/file`; call `invalidate_subtree("bucket/a")`; assert `bucket/abc/file` is NOT evicted. Guards against a bare-`startswith` aliasing bug.
+11. **`invalidate_cache(None)` clears infocache:** Populate infocache; call `fs.invalidate_cache()` with no argument; assert `len(fs.infocache._entries) == 0`. Covers the §4.3 asymmetry.
+12. **`invalidate_cache(path)` does NOT touch infocache:** Populate infocache with entries under `path`; call `fs.invalidate_cache(path)`; assert those infocache entries are still present. Covers the §4.3 hot-path guarantee.
 
 ---
 
 ## 8. Summary
 
-The revised design keeps the implementation in `fsspec`, but avoids the main correctness and maintainability traps:
+The revised design keeps the implementation in `fsspec` and materially simplifies the cache:
 
-- cache disabled by default, safe TTL (60s) when opt-in
-- structured keys with generation aliasing so unqualified and qualified probes share entries
-- single-entry promotion from `dircache` parent_cache hits (no bulk import from `ls`/`find`/`walk`)
-- live-entry-bounded bookkeeping with documented prefix-index cost model and normalized prefix derivation
-- indexed invalidation instead of full-cache scans, with fixed-point parent-walk termination
-- single-ownership contract for `infocache` eviction (base class owns it; subclasses only touch `dircache`)
-- transaction-deferred invalidation: both `infocache` and `dircache` are evicted only at `end_transaction`, matching existing fsspec semantics
-- invalidation runs only after mutating RPCs succeed, matching existing `dircache` ordering
+- cache disabled by default, safe 60s TTL when opt-in
+- one primary entry per path — no compound key, no alias dual-insert
+- generation compared in the value on pinned probes, never encoded in the key
+- single `OrderedDict` — no `_path_index`, no `_prefix_index`, no cross-structure invariants
+- O(1) exact-path invalidation on the mutation hot path
+- O(n) subtree invalidation only on explicit refresh / manual invalidation
+- `invalidate_cache(None)` is the "clear all" button and wipes infocache too; `invalidate_cache(path)` intentionally leaves infocache alone (§4.3)
 - explicit mutation-surface coverage in both `core.py` and `extended_gcsfs.py` with line-anchored audit list
 - built-in `CacheStats` counters for hit-rate validation in production
-- concurrency stance matches `dircache` (no internal locks); request coalescing is a follow-up
-- negative-caching deferred to v2 with explicit acknowledgement of the manifest-probe trade-off
+- concurrency stance matches `dircache` (no locks); request coalescing is a follow-up
+- `_Cached` instance sharing and cross-process consistency documented explicitly
 - concrete fsspec-first rollout sequence with a gcsfs-local fallback path
+- explicit comparison table (§2.11) against the earlier compound-key + dual-index design, with a documented escape hatch if the simpler design ever needs to be reverted
 
-This keeps the abstraction reusable across `fsspec` backends without weakening `gcsfs` correctness.
+This keeps the abstraction reusable across `fsspec` backends while staying closer to the actual workload shape the cache is meant to serve.
