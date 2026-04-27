@@ -22,6 +22,175 @@ Introduce a dedicated `InfoCache` for successful single-object metadata fetches.
 
 The cache is populated by successful point lookups. It is not bulk-populated by `ls()` or `find()`.
 
+### 1.1 Concrete Workload Evidence
+
+This section documents the actual call chains in real ML frameworks that produce the repeated `_info()` calls the cache is designed to absorb. All line numbers were verified against the repositories as of April 2026.
+
+#### Why repeated calls happen: the fsspec method surface
+
+Every high-level fsspec method that answers a metadata question delegates independently to `_info()`. None of them share a result with the others:
+
+| Caller | fsspec location | Leads to |
+|---|---|---|
+| `fs.exists(path)` | `spec.py:668` | `self.info(path)` → `_info()` RPC |
+| `fs.size(path)` | `spec.py:728` | `self.info(path)` → `_info()` RPC |
+| `fs.isfile(path)` | `spec.py:744` | `self.info(path)` → `_info()` RPC |
+| `fs.isdir(path)` | `spec.py:737` | `self.info(path)` → `_info()` RPC |
+| `fs.modified(path)` | `core.py:1039` | `self.info(path)` → `_info()` RPC |
+| `fs.open(path, 'rb')` | `spec.py:1926` | `self.details["size"]` → `GCSFile.details` → `_info()` RPC |
+| `fs.cat(path)` | `core.py:1203` | `await self._info(path)` directly |
+
+`_open()` ([core.py:1902](gcsfs/core.py:1902)) never forwards an already-fetched metadata dict to `GCSFile`, so `GCSFile.details` ([core.py:2152](gcsfs/core.py:2152)) always fires a fresh `_info()` on first access regardless of what the caller fetched moments before.
+
+#### HuggingFace `datasets` — `DatasetDict.load_from_disk`
+
+**Repository:** https://github.com/huggingface/datasets/blob/main/src/datasets/dataset_dict.py  
+**Lines:** 1418–1432
+
+```python
+fs, dataset_dict_path = url_to_fs(dataset_dict_path, **(storage_options or {}))
+
+dataset_dict_json_path  = posixpath.join(dataset_dict_path, config.DATASETDICT_JSON_FILENAME)
+dataset_state_json_path = posixpath.join(dataset_dict_path, config.DATASET_STATE_JSON_FILENAME)
+dataset_info_path       = posixpath.join(dataset_dict_path, config.DATASET_INFO_FILENAME)
+
+if not fs.isfile(dataset_dict_json_path):          # → _info() RPC #1
+    if fs.isfile(dataset_info_path) and \          # → _info() RPC (different path)
+       fs.isfile(dataset_state_json_path):         # → _info() RPC (different path)
+        raise FileNotFoundError(...)
+    raise FileNotFoundError(...)
+
+with fs.open(dataset_dict_json_path, "r") as f:    # → GCSFile.details → _info() RPC #2
+    splits = json.load(f)["splits"]
+```
+
+`dataset_dict_json_path` is probed at line 1423 by `isfile()` and again at line 1432 when `open()` initialises `GCSFile.details`. Same exact GCS path, two independent `_info()` calls. With cache: 2 RPCs → 1.
+
+#### HuggingFace `datasets` — `Dataset.load_from_disk` (3-probe burst)
+
+**Repository:** https://github.com/huggingface/datasets/blob/main/src/datasets/arrow_dataset.py  
+**Lines:** 2021–2030
+
+```python
+fs, dataset_path = url_to_fs(dataset_path, **(storage_options or {}))
+
+dataset_dict_json_path  = posixpath.join(dest_dataset_path, config.DATASETDICT_JSON_FILENAME)
+dataset_state_json_path = posixpath.join(dest_dataset_path, config.DATASET_STATE_JSON_FILENAME)
+dataset_info_path       = posixpath.join(dest_dataset_path, config.DATASET_INFO_FILENAME)
+
+dataset_dict_is_file  = fs.isfile(dataset_dict_json_path)   # → _info() RPC on path A
+dataset_info_is_file  = fs.isfile(dataset_info_path)        # → _info() RPC on path B
+dataset_state_is_file = fs.isfile(dataset_state_json_path)  # → _info() RPC on path C
+```
+
+Three `_info()` RPCs fire unconditionally on every call. These are three distinct paths, so a single call does not collapse them. However, when a training loop calls `load_from_disk` repeatedly (e.g., one evaluation step per 500 training steps), paths A, B, and C are re-probed each time. After the first call warms the cache, every subsequent call hits for all three paths: 3 RPCs per call → 0.
+
+After line 2057 (`if is_remote_filesystem(fs):`), the code downloads to a local temp directory and switches to native `open()`, so the actual file reads do not go through GCS again. The `isfile` burst is the only GCS metadata cost from this function.
+
+#### Compounding case: HuggingFace `datasets` loaded in a training loop
+
+The most common way a GCS-backed dataset produces repeated metadata RPCs is the standard training loop pattern: a fixed dataset is loaded once per evaluation step, because the caller passes the GCS path directly rather than caching the in-memory `Dataset` object.
+
+**Concrete training loop (common pattern):**
+
+```python
+EVAL_DATASET_PATH = "gs://bucket/data/eval/"   # 2-split DatasetDict (train / validation)
+
+for step, batch in enumerate(train_loader):
+    model.train_step(batch)
+
+    if step % EVAL_EVERY == 0:
+        # Re-loaded from GCS on every evaluation step.
+        # Typical in frameworks that rebuild the eval dataset from config
+        # each time (e.g. HuggingFace Trainer with evaluate() called per step,
+        # or custom loops that load from path rather than keeping a handle).
+        eval_ds = load_from_disk(EVAL_DATASET_PATH)
+        metrics = evaluate(model, eval_ds)
+        log(step, metrics)
+```
+
+**Call chain per `load_from_disk` call** (`DatasetDict.load_from_disk` → `Dataset.load_from_disk` × 2 splits):
+
+```
+load_from_disk("gs://bucket/data/eval/")
+│
+├─ DatasetDict.load_from_disk  [dataset_dict.py:1418–1432]
+│   fs.isfile("gs://bucket/data/eval/dataset_dict.json")          ← isfile → _info() #1
+│   fs.open ("gs://bucket/data/eval/dataset_dict.json")           ← open   → _info() #2
+│
+├─ Dataset.load_from_disk("gs://bucket/data/eval/train/")  [arrow_dataset.py:2021–2030]
+│   fs.isfile("gs://bucket/data/eval/train/dataset_dict.json")    ← _info() #3
+│   fs.isfile("gs://bucket/data/eval/train/dataset_info.json")    ← _info() #4
+│   fs.isfile("gs://bucket/data/eval/train/state.json")           ← _info() #5
+│
+└─ Dataset.load_from_disk("gs://bucket/data/eval/validation/")  [arrow_dataset.py:2021–2030]
+    fs.isfile("gs://bucket/data/eval/validation/dataset_dict.json") ← _info() #6
+    fs.isfile("gs://bucket/data/eval/validation/dataset_info.json") ← _info() #7
+    fs.isfile("gs://bucket/data/eval/validation/state.json")        ← _info() #8
+```
+
+**Per-step RPC count across a training run:**
+
+| Eval step | Without cache | With cache (60s TTL) | Notes |
+|---|---|---|---|
+| Step 0 (first) | 8 RPCs | 8 RPCs | Cold — all misses, populates cache |
+| Steps 1–N (within TTL) | 8 RPCs each | 1 RPC each | #1 refetches; #2 hits #1; #3–#8 all hit |
+| First step after TTL expires | 8 RPCs | 8 RPCs | Full re-fetch, warms cache again |
+
+For a training run with `eval_every=500` steps over 10 000 steps, that is 20 evaluation steps. Without cache: 160 RPCs. With cache and a 60s TTL longer than the eval interval: 8 + 19 × 1 = **27 RPCs total**.
+
+**Why RPC #1 still fires on each warm step:** `dataset_dict.json` is the first call in `DatasetDict.load_from_disk`. It fires `isfile()` on that path (RPC #1), then immediately opens the same path (RPC #2 → cache hit). RPCs #3–#8 are all hits because the six per-split paths were cached from the previous eval step. The single surviving RPC is unavoidable without a higher-level dataset-identity cache outside of `gcsfs`.
+
+**Why `is_remote_filesystem` does not help here:** `Dataset.load_from_disk` checks `is_remote_filesystem(fs)` (line 2057) and downloads the dataset files to a local temp directory before reading them with native `open()`. So the actual Arrow/Parquet file reads are already local. The 8 metadata RPCs are *pure existence checks* — no data is transferred through them. Eliminating them with the cache removes latency that has no data-transfer justification.
+
+#### Training: checkpoint resume (general pattern)
+
+This pattern appears across frameworks (PyTorch Lightning, HuggingFace Trainer, custom training loops). The typical resume-from-checkpoint sequence:
+
+```python
+ckpt = "gs://bucket/run-42/checkpoints/step_10000.pt"
+
+# 1. Existence guard (framework or user code)
+if not fs.exists(ckpt):               # spec.py:668 → _info() RPC #1
+    start_fresh()
+
+# 2. Log metadata before loading
+size  = fs.size(ckpt)                 # spec.py:728 → _info() RPC #2
+mtime = fs.modified(ckpt)             # core.py:1039 → _info() RPC #3
+
+# 3. Open and load
+with fs.open(ckpt, 'rb') as f:        # spec.py:1926 → GCSFile.details → _info() RPC #4
+    checkpoint = torch.load(f)
+```
+
+4 RPCs on the same path within milliseconds. With cache: 1 RPC, 3 hits. The gap between step 2 and step 3 is always sub-second (no I/O between them), so all four fall inside the 60s default TTL.
+
+#### Inference: model cold start (general pattern)
+
+A serving container (TorchServe, vLLM, Triton with GCS backend) loading weights on startup:
+
+```python
+model_uri = "gs://bucket/models/llama-3-8b/model.safetensors"
+
+if not fs.isfile(model_uri):          # spec.py:744 → _info() RPC #1
+    raise RuntimeError("Model artifact missing")
+
+model_size = fs.size(model_uri)       # spec.py:728 → _info() RPC #2
+
+with fs.open(model_uri, 'rb') as f:   # spec.py:1926 → GCSFile.details → _info() RPC #3
+    model = safetensors.torch.load_stream(f)
+```
+
+3 RPCs → 1 with cache. If multiple threads initialise simultaneously (e.g., a serving framework spinning up replica workers in the same process), each thread fires the same sequence before any result is cached, yielding up to 3N RPCs on the same path. The cache reduces steady-state cost to near-zero but does not coalesce the cold-start stampede (§2.10).
+
+#### What does NOT benefit from the cache
+
+For completeness, patterns that look similar but do not produce repeated calls on the same path:
+
+- **HuggingFace Transformers `Trainer._load_from_checkpoint`**: Uses `os.path.isfile()` (local filesystem), not `fs.isfile()`. The Trainer downloads checkpoint files to local storage first; all subsequent operations are local-disk I/O.
+- **PyTorch Lightning version-counter loop**: Calls `fs.exists(filepath_with_version_N)` in a while loop, but each iteration increments the version suffix, producing a distinct path. No path is repeated.
+- **Ray Train `_delete_fs_path`**: Uses PyArrow's filesystem API (`fs.get_file_info()`), not fsspec. Different subsystem.
+
 ---
 
 ## 2. Key Design Decisions and Trade-offs
