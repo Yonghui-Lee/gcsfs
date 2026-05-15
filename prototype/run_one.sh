@@ -15,14 +15,13 @@ case "$ROW" in
   +large_io)  FLAGS="--max-read=1048576" ;;
   +clone_fd)  FLAGS="--max-read=1048576 --clone-fd --max-background=256" ;;
   +cache)     FLAGS="--max-read=1048576 --clone-fd --max-background=256 --attr-timeout=600" ;;
-  +io_uring)  FLAGS="--max-read=1048576 --clone-fd --max-background=256 --attr-timeout=600"
-              # io_uring backing is a kernel-level option (mount -t fuse -o io_uring ...).
-              # pyfuse3 enables it via "io_uring" mount opt if libfuse3 + kernel support it;
-              # if unavailable, the runner falls back and reports skip.
-              FLAGS="$FLAGS --no-splice"   # io_uring path supersedes splice
-              ;;
+  +io_uring)  FLAGS="--max-read=1048576 --clone-fd --max-background=256 --attr-timeout=600 --no-splice --io-uring" ;;
   *) echo "unknown row: $ROW"; exit 1 ;;
 esac
+
+if [[ "$JOB" == "stat_storm" ]]; then
+  FLAGS="$FLAGS --fileset=stat-storm"
+fi
 
 BACKEND_LABEL="${BACKEND}"
 if [[ "$BACKEND" == "latencyfs" ]]; then

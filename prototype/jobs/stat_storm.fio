@@ -1,5 +1,6 @@
 [global]
 ioengine=psync
+direct=1
 runtime=30
 ramp_time=5
 time_based=1
