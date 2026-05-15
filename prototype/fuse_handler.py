@@ -1,3 +1,5 @@
+import errno
+import os
 import stat as _stat
 
 import pyfuse3
@@ -45,3 +47,68 @@ def build_entry_attrs(
     a.entry_timeout = attr_timeout
     a.attr_timeout = attr_timeout
     return a
+
+
+class FuseHandler(pyfuse3.Operations):
+    supports_dot_lookup = False
+
+    def __init__(self, backend, attr_timeout: float = 600.0, keep_cache: bool = True):
+        super().__init__()
+        self.backend = backend
+        self.attr_timeout = attr_timeout
+        self.keep_cache = keep_cache
+        self._inodes = InodeTable()
+        self._open_files: dict[int, object] = {}
+        self._next_fh = 1
+
+    async def getattr(self, ino, ctx=None):
+        path = self._inodes.path_for(ino)
+        info = await self.backend.stat(path)
+        return build_entry_attrs(ino, info, self.attr_timeout)
+
+    async def lookup(self, parent_ino, name, ctx=None):
+        parent = self._inodes.path_for(parent_ino)
+        child_name = name.decode() if isinstance(name, bytes) else name
+        path = "/" + child_name if parent == "/" else f"{parent}/{child_name}"
+        try:
+            info = await self.backend.stat(path)
+        except FileNotFoundError:
+            raise pyfuse3.FUSEError(errno.ENOENT)
+        return build_entry_attrs(self._inodes.intern(path), info, self.attr_timeout)
+
+    async def opendir(self, ino, ctx):
+        return ino
+
+    async def readdir(self, ino, off, token):
+        path = self._inodes.path_for(ino)
+        names = await self.backend.listdir(path)
+        for i, name in enumerate(names[off:], start=off + 1):
+            child = "/" + name if path == "/" else f"{path}/{name}"
+            info = await self.backend.stat(child)
+            attrs = build_entry_attrs(
+                self._inodes.intern(child), info, self.attr_timeout
+            )
+            if not pyfuse3.readdir_reply(token, name.encode(), attrs, i):
+                break
+
+    async def releasedir(self, fh):
+        pass
+
+    async def open(self, ino, flags, ctx):
+        if flags & (os.O_WRONLY | os.O_RDWR):
+            raise pyfuse3.FUSEError(errno.EROFS)
+        path = self._inodes.path_for(ino)
+        bh = await self.backend.open(path)
+        fh = self._next_fh
+        self._next_fh += 1
+        self._open_files[fh] = bh
+        return pyfuse3.FileInfo(fh=fh, keep_cache=self.keep_cache)
+
+    async def read(self, fh, off, size):
+        bh = self._open_files[fh]
+        return await self.backend.read(bh, off, size)
+
+    async def release(self, fh):
+        bh = self._open_files.pop(fh, None)
+        if bh is not None:
+            await self.backend.close(bh)
