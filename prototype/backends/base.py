@@ -1,4 +1,4 @@
-from typing import Protocol
+from typing import Protocol, runtime_checkable
 
 
 class StatInfo:
@@ -10,6 +10,7 @@ class StatInfo:
         self.is_dir = is_dir
 
 
+@runtime_checkable
 class Backend(Protocol):
     async def stat(self, path: str) -> StatInfo: ...
     async def listdir(self, path: str) -> list[str]: ...

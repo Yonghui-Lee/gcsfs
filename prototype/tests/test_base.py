@@ -9,7 +9,31 @@ def test_statinfo_holds_fields():
     assert s.is_dir is False
 
 
-def test_backend_protocol_has_expected_methods():
-    expected = {"stat", "listdir", "open", "read", "close"}
-    actual = {m for m in dir(Backend) if not m.startswith("_")}
-    assert expected <= actual
+def test_concrete_class_satisfies_backend_protocol():
+    class _DummyBackend:
+        async def stat(self, path: str) -> StatInfo:
+            return StatInfo(0, 0.0, False)
+
+        async def listdir(self, path: str) -> list[str]:
+            return []
+
+        async def open(self, path: str):
+            return None
+
+        async def read(self, fh, offset: int, size: int) -> bytes:
+            return b""
+
+        async def close(self, fh) -> None:
+            pass
+
+    assert isinstance(_DummyBackend(), Backend)
+
+
+def test_incomplete_class_fails_backend_protocol():
+    class _MissingClose:
+        async def stat(self, path): ...
+        async def listdir(self, path): ...
+        async def open(self, path): ...
+        async def read(self, fh, offset, size): ...
+
+    assert not isinstance(_MissingClose(), Backend)
