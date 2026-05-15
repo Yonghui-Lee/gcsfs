@@ -1,0 +1,4 @@
+pyfuse3>=3.4.0
+trio>=0.24
+pytest>=8.0
+pytest-trio>=0.8
