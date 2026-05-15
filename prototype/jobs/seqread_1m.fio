@@ -1,0 +1,17 @@
+[global]
+ioengine=psync
+direct=1
+runtime=30
+ramp_time=5
+time_based=1
+group_reporting=1
+randrepeat=0
+directory=${MOUNT}
+nrfiles=64
+filesize=16M
+
+[seqread_1m]
+rw=read
+bs=1M
+numjobs=4
+iodepth=4
