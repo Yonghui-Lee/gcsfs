@@ -64,6 +64,8 @@ async def test_read_offset_slice(fs):
 @pytest.mark.trio
 async def test_read_past_end_truncates(fs):
     fh = await fs.open("/a.bin")
+    full = await fs.read(fh, 0, 1024)
     data = await fs.read(fh, 1000, 100)
     assert len(data) == 24
+    assert data == full[1000:]
     await fs.close(fh)

@@ -34,13 +34,6 @@ class MemFs:
             if p.startswith(prefix):
                 tail = p[len(prefix):]
                 names.add(tail.split("/", 1)[0])
-        for d in self._dirs():
-            if d == path or d == "/":
-                continue
-            parent, _, name = d.rpartition("/")
-            parent = parent or "/"
-            if parent == path:
-                names.add(name)
         return sorted(names)
 
     async def open(self, path: str):
