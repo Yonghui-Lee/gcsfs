@@ -4,21 +4,6 @@ This directory contains a high-performance, CPython-embedded external I/O engine
 
 ---
 
-## Reference Benchmark Results
-
-The following table represents standard sequential read throughput benchmarks comparing GCSFS performance on **Rapid Buckets** (e.g., HNS/Zonal) vs. **Standard Buckets**:
-
-### Sequential Reads Throughput (MB/s)
-
-| IO Size | Processes | Rapid Bucket | Standard Bucket | Speedup Factor |
-|---|---|---|---|---|
-| **1 MB** | Single Process | 469.09 MB/s | 37.76 MB/s | **~12x** |
-| **16 MB** | Single Process | 628.59 MB/s | 64.50 MB/s | **~9x** |
-| **1 MB** | 48 Processes | 16,932.00 MB/s | 2,202.00 MB/s | **~7x** |
-| **16 MB** | 48 Processes | 19,213.27 MB/s | 4,010.50 MB/s | **~4x** |
-
----
-
 ## Architecture
 
 ```
