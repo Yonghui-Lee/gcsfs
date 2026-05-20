@@ -1,0 +1,10 @@
+[global]
+ioengine=external:./libgcsfs_fio_engine.so
+bs=1M
+iodepth=64
+size=1G
+group_reporting=1
+filename=yonghui-gcsfs-test-zonal/benchmark_file
+
+[write_1g]
+rw=write

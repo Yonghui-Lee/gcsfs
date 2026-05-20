@@ -1,16 +1,13 @@
-# fio/jobs/seqread_1m_multi.fio
-
 [global]
 ioengine=external:./libgcsfs_fio_engine.so
 bs=1M
-iodepth=1
-numjobs=48
-size=8G
+iodepth=16
+size=1G
 time_based=1
-runtime=60s
-ramp_time=5s
+runtime=30s
 group_reporting=1
-filename_format=gcsfs-fio-benchmark/write.$jobnum
+filename=yonghui-gcsfs-test-zonal/1g_file
 
 [seqread_1m_multi]
 rw=read
+numjobs=48

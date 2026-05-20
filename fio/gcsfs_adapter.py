@@ -1,10 +1,10 @@
 # fio/gcsfs_adapter.py
 
 import asyncio
-import threading
-import queue
-import logging
 import ctypes
+import logging
+import queue
+import threading
 from concurrent.futures import Future
 
 from gcsfs.extended_gcsfs import ExtendedGcsFileSystem, initiate_upload, upload_chunk
@@ -24,6 +24,7 @@ _handles = {}
 _handle_lock = threading.Lock()
 _next_handle_id = 1
 _completions = queue.Queue()
+_iodepth = 64
 
 # Lock to prevent race conditions during multi-threaded init
 _init_lock = threading.Lock()
@@ -32,17 +33,19 @@ _init_lock = threading.Lock()
 # Helper Classes
 # -------------------------------------------------------------------------
 
+
 class BufferStream:
     """
     Wraps a C-backed memoryview to look like a Python file object.
-    Uses ctypes to perform raw memory copies, bypassing Python's strict 
+    Uses ctypes to perform raw memory copies, bypassing Python's strict
     memoryview type checks (signed vs unsigned char).
     """
+
     def __init__(self, buffer_view):
         self.view = buffer_view
         self.cursor = 0
         self.length = len(buffer_view)
-        
+
         try:
             self.c_type = ctypes.c_ubyte * self.length
             self.c_array = self.c_type.from_buffer(self.view)
@@ -53,18 +56,19 @@ class BufferStream:
     def write(self, data):
         """Copies data directly into the C buffer."""
         n = len(data)
-        
+
         if self.cursor + n > self.length:
             raise ValueError(f"Buffer overflow: {self.cursor + n} > {self.length}")
 
         dest_addr = ctypes.addressof(self.c_array) + self.cursor
-        
+
         if not isinstance(data, bytes):
-             data = bytes(data)
+            data = bytes(data)
 
         ctypes.memmove(dest_addr, data, n)
         self.cursor += n
         return n
+
 
 class FileContext:
     def __init__(self, filename):
@@ -77,17 +81,21 @@ class FileContext:
             self.bucket = "unknown"
             self.object = filename
 
+
 class ReaderContext(FileContext):
-    def __init__(self, filename):
+    def __init__(self, filename, f=None):
         super().__init__(filename)
+        self.f = f
+
 
 class WriterContext(FileContext):
     def __init__(self, filename, location, total_size, flush_every_write):
         super().__init__(filename)
         self.location = location
         self.total_size = total_size
-        self.flush_every_write = flush_writes = flush_every_write
+        self.flush_every_write = flush_every_write
         self.written_bytes = 0
+
 
 def _register_handle(obj):
     global _next_handle_id
@@ -97,38 +105,46 @@ def _register_handle(obj):
         _next_handle_id += 1
         return hid
 
+
 def _get_handle(hid):
     with _handle_lock:
         return _handles.get(hid)
+
 
 def _remove_handle(hid):
     with _handle_lock:
         if hid in _handles:
             del _handles[hid]
 
+
 # -------------------------------------------------------------------------
 # Async Coroutines
 # -------------------------------------------------------------------------
+
 
 def _start_background_loop(loop):
     asyncio.set_event_loop(loop)
     loop.run_forever()
 
+
 def _completion_callback(f: Future, tag: int):
     try:
         f.result()
-        _completions.put((tag, 0)) # Success
+        _completions.put((tag, 0))  # Success
     except Exception as e:
         logger.error(f"Async IO failed: {e}")
-        _completions.put((tag, -1)) # Error
+        _completions.put((tag, -1))  # Error
+
 
 async def _do_async_read(ctx: ReaderContext, offset: int, size: int, buffer_view):
-    # Fetch the range asynchronously. ExtendedGcsFileSystem routes via gRPC automatically for Zonal
-    data = await _fs._cat_file(ctx.filename, start=offset, end=offset + size)
-    
+    # Fetch the range asynchronously using the file object's internal async fetch
+    # This ensures parity with the high-level API used in micro-benchmarks
+    data = await ctx.f._async_fetch_range(offset, size)
+
     # Copy downloaded bytes directly to FIO's C buffer
     stream = BufferStream(buffer_view)
     stream.write(data)
+
 
 async def _do_async_write(ctx: WriterContext, offset: int, data: bytes):
     # Resumable upload chunk write. Automatically leverages gRPC append stream for Zonal buckets
@@ -138,15 +154,24 @@ async def _do_async_write(ctx: WriterContext, offset: int, data: bytes):
         data=data,
         offset=offset,
         size=ctx.total_size,
-        content_type="application/octet-stream"
+        content_type="application/octet-stream",
     )
     ctx.written_bytes += len(data)
 
+
 async def _do_init_client():
     global _fs
-    # Initialize ExtendedGcsFileSystem to support optimized Zonal/gRPC file transfers dynamically
+    # Initialize ExtendedGcsFileSystem
     _fs = ExtendedGcsFileSystem(asynchronous=True)
+    # Ensure it uses our loop
+    _fs._loop = asyncio.get_running_loop()
     _fs.retries = 1
+
+    # Also set fsspec's global loop for any other sync wrappers
+    import fsspec.asyn
+
+    fsspec.asyn.loop[0] = _fs._loop
+
 
 async def _do_open_writer(filename, total_size) -> str:
     parts = filename.split("/", 1)
@@ -155,66 +180,80 @@ async def _do_open_writer(filename, total_size) -> str:
         bucket=parts[0],
         key=parts[1],
         content_type="application/octet-stream",
-        mode="overwrite"
+        mode="overwrite",
     )
     return location
+
 
 # -------------------------------------------------------------------------
 # Exported Functions (Called by C Engine)
 # -------------------------------------------------------------------------
 
+
 def py_init(iodepth):
-    global _loop, _loop_thread
-    
+    global _loop, _loop_thread, _iodepth
+
     with _init_lock:
         if _loop is not None:
             return 0
 
         try:
-            # Inject high-performance uvloop if available
-            try:
-                import uvloop
-                asyncio.set_event_loop_policy(uvloop.EventLoopPolicy())
-            except ImportError:
-                logger.warn("uvloop not installed, falling back to standard asyncio")
+            _iodepth = iodepth
+            import uvloop
+
+            asyncio.set_event_loop_policy(uvloop.EventLoopPolicy())
 
             _loop = asyncio.new_event_loop()
-            _loop_thread = threading.Thread(target=_start_background_loop, args=(_loop,), daemon=True)
+            _loop_thread = threading.Thread(
+                target=_start_background_loop, args=(_loop,), daemon=True
+            )
             _loop_thread.start()
-            
+
             future = asyncio.run_coroutine_threadsafe(_do_init_client(), _loop)
             future.result(timeout=10)
-            
-            logger.info(f"Python Async Extended GCSFS Engine Initialized. IODepth: {iodepth}")
+
+            logger.info(
+                f"Python Async Extended GCSFS Engine Initialized. IODepth: {iodepth}"
+            )
             return 0
         except Exception as e:
             logger.error(f"Init failed: {e}")
             return -1
 
+
 def py_open(filename, is_write, flush_writes=False, total_size=0):
     try:
         if is_write:
-            future = asyncio.run_coroutine_threadsafe(_do_open_writer(filename, total_size), _loop)
+            future = asyncio.run_coroutine_threadsafe(
+                _do_open_writer(filename, total_size), _loop
+            )
             location = future.result(timeout=30)
             ctx = WriterContext(filename, location, total_size, flush_writes)
             return _register_handle(ctx)
         else:
-            # Read mode does not need active server-side handle creation
-            ctx = ReaderContext(filename)
+            # Read mode: Use gcs.open() to match micro-benchmarks and reuse gRPC streams
+            # block_size and cache_type="none" are used to ensure fio controls all I/O
+            f = _fs.open(filename, "rb", cache_type="none", concurrency=_iodepth)
+            ctx = ReaderContext(filename, f=f)
             return _register_handle(ctx)
-            
+
     except Exception as e:
         logger.error(f"Open failed for {filename}: {e}")
         return 0
 
+
 def py_close(handle):
     ctx = _get_handle(handle)
-    if not ctx: return -1
+    if not ctx:
+        return -1
     try:
         if isinstance(ctx, WriterContext):
             # If file was closed early or size mismatch, finalize with the current written size
             if ctx.written_bytes < ctx.total_size:
-                logger.warn(f"Finalizing early: wrote {ctx.written_bytes} of {ctx.total_size}")
+                logger.warn(
+                    f"Finalizing early: wrote {ctx.written_bytes} of {ctx.total_size}"
+                )
+
                 async def _finalize():
                     await upload_chunk(
                         fs=_fs,
@@ -222,19 +261,26 @@ def py_close(handle):
                         data=b"",
                         offset=ctx.written_bytes,
                         size=ctx.written_bytes,
-                        content_type="application/octet-stream"
+                        content_type="application/octet-stream",
                     )
+
                 future = asyncio.run_coroutine_threadsafe(_finalize(), _loop)
                 future.result(timeout=15)
+        elif isinstance(ctx, ReaderContext):
+            if ctx.f:
+                # GCSFile.close() is sync but calls asyn.sync(mrd_pool.close) internally for Zonal
+                ctx.f.close()
         _remove_handle(handle)
         return 0
     except Exception as e:
         logger.error(f"Close failed: {e}")
         return -1
 
+
 def py_queue(handle, tag, offset, buffer_view, is_write):
     ctx = _get_handle(handle)
-    if not ctx: return -1
+    if not ctx:
+        return -1
     try:
         if is_write:
             data = bytes(buffer_view)
@@ -245,17 +291,18 @@ def py_queue(handle, tag, offset, buffer_view, is_write):
 
         future = asyncio.run_coroutine_threadsafe(coro, _loop)
         future.add_done_callback(lambda f: _completion_callback(f, tag))
-        return 1 
+        return 1
     except Exception as e:
         logger.error(f"Queue failed: {e}")
         return -1
+
 
 def py_get_events(min_events):
     results = []
     # Try to fetch requested number of events
     for _ in range(min_events):
         results.append(_completions.get())
-    
+
     # Drain any extras that are ready immediately
     while True:
         try:

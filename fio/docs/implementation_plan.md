@@ -66,7 +66,7 @@ A compiled shared library loaded by FIO as an external engine (`--ioengine=exter
 Runs a dedicated background thread with a high-performance event loop (`uvloop`).
 * **Background Event Loop:** Manages a single instance of `GCSFileSystem(asynchronous=True)` bound to its running loop.
 * **`submit_io`:** Schedules a coroutine to execute the requested file operation (e.g., `_cat_file` for reads, `_pipe_file` for writes) on the event loop thread.
-* **Zero-Copy Optimization:** 
+* **Zero-Copy Optimization:**
   * **Write Path:** Passes the `memoryview` over FIO's buffer directly to `gcsfs._pipe_file()`. `aiohttp`'s `BytesPayload` streams the memoryview directly through the socket via `sendmsg(2)` without duplicating the buffer on the Python heap.
   * **Read Path:** `aiohttp`'s parser creates a `bytes` object internally from the network socket. The adapter copies this data into the FIO C buffer via a high-speed `ctypes.memmove` (single boundary copy, unavoidable without rewriting `aiohttp`).
 

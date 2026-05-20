@@ -3,6 +3,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <dlfcn.h>
 
 #include "config-host.h"
 #include "fio.h"
@@ -32,7 +33,7 @@ struct py_thread_data {
  */
 struct py_options {
     void *pad;
-    unsigned int iodepth; 
+    unsigned int iodepth;
     unsigned int flush_every_write;
 };
 
@@ -58,8 +59,16 @@ static struct fio_option options[] = {
 static int py_storage_init(struct thread_data *td) {
     // 1. Initialize Python (only once per process)
     if (!Py_IsInitialized()) {
+        // Force libpython symbols to be globally visible before initializing
+        // This solves the issue where Fio dlopen's this plugin without RTLD_GLOBAL,
+        // causing Python C-extensions (like _contextvars) to fail to find core Py symbols.
+        void *libpython = dlopen(PY_SONAME, RTLD_GLOBAL | RTLD_NOW);
+        if (!libpython) {
+            fprintf(stderr, "Warning: Failed to dlopen %s globally: %s\n", PY_SONAME, dlerror());
+        }
+
         Py_Initialize();
-        
+
         // Add current directory to sys.path so we can find gcsfs_adapter.py
         PyObject *sysPath = PySys_GetObject("path");
         PyObject *cwd = PyUnicode_FromString(".");
@@ -94,11 +103,11 @@ static int py_storage_init(struct thread_data *td) {
     // 2. Initialize the Python-side logic (Global Loop & Client)
     // Acquire GIL for calling Python
     PyGILState_STATE gstate = PyGILState_Ensure();
-    
+
     PyObject *args = PyTuple_Pack(1, PyLong_FromLong(td->o.iodepth));
     PyObject *result = PyObject_CallObject(pFuncInit, args);
     Py_DECREF(args);
-    
+
     int success = 0;
     if (result == NULL) {
         PyErr_Print();
@@ -134,14 +143,14 @@ static int py_storage_open(struct thread_data *td, struct fio_file *f) {
 
     struct py_options *o = td->eo;
     int is_write = (td->o.td_ddir == TD_DDIR_WRITE);
-    
-    PyObject *args = PyTuple_Pack(4, 
+
+    PyObject *args = PyTuple_Pack(4,
         PyUnicode_FromString(f->file_name),
         PyBool_FromLong(is_write),
         PyBool_FromLong(o->flush_every_write),
         PyLong_FromLongLong((long long)f->real_file_size)
     );
-    
+
     PyObject *result = PyObject_CallObject(pFuncOpen, args);
     Py_DECREF(args);
 
@@ -163,12 +172,12 @@ static int py_storage_open(struct thread_data *td, struct fio_file *f) {
 
 static int py_storage_close(struct thread_data *td, struct fio_file *f) {
     PyGILState_STATE gstate = PyGILState_Ensure();
-    
+
     long handle = (long)(uintptr_t)f->engine_data;
     PyObject *args = PyTuple_Pack(1, PyLong_FromLong(handle));
     PyObject *result = PyObject_CallObject(pFuncClose, args);
     Py_DECREF(args);
-    
+
     if (result) Py_DECREF(result);
     else PyErr_Print();
 
@@ -181,12 +190,12 @@ static enum fio_q_status py_storage_queue(struct thread_data *td, struct io_u *i
 
     long handle = (long)(uintptr_t)io_u->file->engine_data;
     int is_write = (io_u->ddir == DDIR_WRITE);
-    
+
     // Zero-Copy Magic: Create a MemoryView directly on the FIO C buffer.
     // Python can write directly into this (for reads) or read from it (for writes).
     PyObject *py_buf = PyMemoryView_FromMemory(
-        (char *)io_u->xfer_buf, 
-        io_u->xfer_buflen, 
+        (char *)io_u->xfer_buf,
+        io_u->xfer_buflen,
         is_write ? PyBUF_READ : PyBUF_WRITE
     );
 
@@ -201,9 +210,9 @@ static enum fio_q_status py_storage_queue(struct thread_data *td, struct io_u *i
 
     PyObject *result = PyObject_CallObject(pFuncQueue, args);
     Py_DECREF(args);
-    Py_DECREF(py_buf); 
+    Py_DECREF(py_buf);
 
-    enum fio_q_status ret = FIO_Q_COMPLETED; 
+    enum fio_q_status ret = FIO_Q_COMPLETED;
     if (result == NULL) {
         PyErr_Print();
         io_u->error = EIO;
@@ -278,11 +287,11 @@ static struct io_u *py_storage_event(struct thread_data *td, int event) {
     int err = (int)PyLong_AsLong(pErr);
 
     if (err != 0) {
-        io_u->error = EIO; 
+        io_u->error = EIO;
     } else {
         io_u->error = 0;
     }
-    
+
     PyGILState_Release(gstate);
     return io_u;
 }

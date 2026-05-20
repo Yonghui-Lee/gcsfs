@@ -1,12 +1,14 @@
 # fio/Makefile
 
-FIO_VERSION = 3.41
+FIO_VERSION = 3.39
 FIO_SRC = fio-src
 PY_CFLAGS = $(shell python3-config --cflags --embed)
 PY_LDFLAGS = $(shell python3-config --ldflags --embed)
+PY_SONAME = $(shell python3 -c "import sysconfig; print(sysconfig.get_config_var('INSTSONAME'))")
 
 libgcsfs_fio_engine.so: gcsfs_engine.c $(FIO_SRC)/config-host.h
-	gcc -O3 -g -shared -fPIC -Wall -Wextra \
+	gcc -O3 -g -shared -fPIC -Wall -Wextra -Wno-unused-parameter \
+		-DPY_SONAME=\"$(PY_SONAME)\" \
 		-o libgcsfs_fio_engine.so gcsfs_engine.c \
 		-I$(FIO_SRC) \
 		$(PY_CFLAGS) $(PY_LDFLAGS) \

@@ -1,13 +1,12 @@
 [global]
 ioengine=external:./libgcsfs_fio_engine.so
-bs=16M
-iodepth=8
+bs=1M
+iodepth=64
 size=1G
 time_based=1
 runtime=30s
 group_reporting=1
 filename=yonghui-gcsfs-test-zonal/1g_file
 
-[seqread_16m_multi]
+[seqread_1m]
 rw=read
-numjobs=48

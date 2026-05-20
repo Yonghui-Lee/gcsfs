@@ -32,6 +32,7 @@ dependencies = [
     "google-cloud-storage>=3.9.0",
     "google-cloud-storage-control",
     "requests",
+    "uvloop; platform_system != 'Windows'",
 ]
 
 [project.optional-dependencies]

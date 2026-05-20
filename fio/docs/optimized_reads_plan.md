@@ -9,10 +9,10 @@ Detailed design and implementation plan to optimize the GCS gRPC read path to th
 Currently, reading an object from a Zonal bucket over gRPC incurs **two memory copies** in userspace:
 
 ```
-[gRPC C++ Core] 
+[gRPC C++ Core]
       │
       ▼ (Copy 1: protobuf C++ allocates & copies payload to CPython Heap)
-[Python `bytes` object] 
+[Python `bytes` object]
       │
       ▼ (Copy 2: ctypes.memmove copies bytes to FIO C buffer)
 [FIO C Buffer (xfer_buf)]
