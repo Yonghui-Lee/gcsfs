@@ -1,0 +1,16 @@
+# fio/jobs/seqread_16m_multi.fio
+
+[global]
+ioengine=external:./libgcsfs_fio_engine.so
+bs=16M
+iodepth=1
+numjobs=48
+size=8G
+time_based=1
+runtime=60s
+ramp_time=5s
+group_reporting=1
+filename_format=gcsfs-fio-benchmark/write.$jobnum
+
+[seqread_16m_multi]
+rw=read

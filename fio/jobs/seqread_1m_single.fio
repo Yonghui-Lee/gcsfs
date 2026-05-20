@@ -1,0 +1,15 @@
+# fio/jobs/seqread_1m_single.fio
+
+[global]
+ioengine=external:./libgcsfs_fio_engine.so
+bs=1M
+iodepth=64
+size=100G
+time_based=1
+runtime=60s
+ramp_time=5s
+group_reporting=1
+filename=gcsfs-fio-benchmark/write.0
+
+[seqread_1m_single]
+rw=read
