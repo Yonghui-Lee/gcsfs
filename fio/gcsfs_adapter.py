@@ -286,8 +286,7 @@ def py_queue(handle, tag, offset, buffer_view, is_write):
         return -1
     try:
         if is_write:
-            data = bytes(buffer_view)
-            coro = _do_async_write(ctx, offset, data)
+            coro = _do_async_write(ctx, offset, buffer_view)
         else:
             size = len(buffer_view)
             coro = _do_async_read(ctx, offset, size, buffer_view)
