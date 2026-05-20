@@ -1,4 +1,4 @@
-# prototype/gcsfs_adapter.py
+# fio/gcsfs_adapter.py
 
 import asyncio
 import threading
@@ -7,8 +7,7 @@ import logging
 import ctypes
 from concurrent.futures import Future
 
-import gcsfs
-from gcsfs.core import initiate_upload, upload_chunk
+from gcsfs.extended_gcsfs import ExtendedGcsFileSystem, initiate_upload, upload_chunk
 
 # Configure logging
 logging.basicConfig(level=logging.WARN)
@@ -87,7 +86,7 @@ class WriterContext(FileContext):
         super().__init__(filename)
         self.location = location
         self.total_size = total_size
-        self.flush_every_write = flush_every_write
+        self.flush_every_write = flush_writes = flush_every_write
         self.written_bytes = 0
 
 def _register_handle(obj):
@@ -124,7 +123,7 @@ def _completion_callback(f: Future, tag: int):
         _completions.put((tag, -1)) # Error
 
 async def _do_async_read(ctx: ReaderContext, offset: int, size: int, buffer_view):
-    # Fetch the range asynchronously using gcsfs core Sequential Cat
+    # Fetch the range asynchronously. ExtendedGcsFileSystem routes via gRPC automatically for Zonal
     data = await _fs._cat_file(ctx.filename, start=offset, end=offset + size)
     
     # Copy downloaded bytes directly to FIO's C buffer
@@ -132,7 +131,7 @@ async def _do_async_read(ctx: ReaderContext, offset: int, size: int, buffer_view
     stream.write(data)
 
 async def _do_async_write(ctx: WriterContext, offset: int, data: bytes):
-    # Resumable upload chunk write
+    # Resumable upload chunk write. Automatically leverages gRPC append stream for Zonal buckets
     await upload_chunk(
         fs=_fs,
         location=ctx.location,
@@ -145,8 +144,8 @@ async def _do_async_write(ctx: WriterContext, offset: int, data: bytes):
 
 async def _do_init_client():
     global _fs
-    # Initialize gcsfs asynchronous client with retries=1 to optimize zero-copy writes
-    _fs = gcsfs.GCSFileSystem(asynchronous=True)
+    # Initialize ExtendedGcsFileSystem to support optimized Zonal/gRPC file transfers dynamically
+    _fs = ExtendedGcsFileSystem(asynchronous=True)
     _fs.retries = 1
 
 async def _do_open_writer(filename, total_size) -> str:
@@ -186,7 +185,7 @@ def py_init(iodepth):
             future = asyncio.run_coroutine_threadsafe(_do_init_client(), _loop)
             future.result(timeout=10)
             
-            logger.info(f"Python Async GCSFS Engine Initialized. IODepth: {iodepth}")
+            logger.info(f"Python Async Extended GCSFS Engine Initialized. IODepth: {iodepth}")
             return 0
         except Exception as e:
             logger.error(f"Init failed: {e}")
