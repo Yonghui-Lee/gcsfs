@@ -34,40 +34,7 @@ _init_lock = threading.Lock()
 # -------------------------------------------------------------------------
 
 
-class BufferStream:
-    """
-    Wraps a C-backed memoryview to look like a Python file object.
-    Uses ctypes to perform raw memory copies, bypassing Python's strict
-    memoryview type checks (signed vs unsigned char).
-    """
-
-    def __init__(self, buffer_view):
-        self.view = buffer_view
-        self.cursor = 0
-        self.length = len(buffer_view)
-
-        try:
-            self.c_type = ctypes.c_ubyte * self.length
-            self.c_array = self.c_type.from_buffer(self.view)
-        except Exception as e:
-            logger.error(f"Failed to create ctypes view: {e}")
-            raise
-
-    def write(self, data):
-        """Copies data directly into the C buffer."""
-        n = len(data)
-
-        if self.cursor + n > self.length:
-            raise ValueError(f"Buffer overflow: {self.cursor + n} > {self.length}")
-
-        dest_addr = ctypes.addressof(self.c_array) + self.cursor
-
-        if not isinstance(data, bytes):
-            data = bytes(data)
-
-        ctypes.memmove(dest_addr, data, n)
-        self.cursor += n
-        return n
+# BufferStream is no longer needed as we use native memoryview.cast('B') for high-speed direct copies
 
 
 class FileContext:
@@ -141,9 +108,8 @@ async def _do_async_read(ctx: ReaderContext, offset: int, size: int, buffer_view
     # This ensures parity with the high-level API used in micro-benchmarks
     data = await ctx.f._async_fetch_range(offset, size)
 
-    # Copy downloaded bytes directly to FIO's C buffer
-    stream = BufferStream(buffer_view)
-    stream.write(data)
+    # Copy downloaded bytes directly to FIO's C buffer using zero-copy cast and slice assignment
+    buffer_view.cast('B')[:len(data)] = data
 
 
 async def _do_async_write(ctx: WriterContext, offset: int, data: bytes):
