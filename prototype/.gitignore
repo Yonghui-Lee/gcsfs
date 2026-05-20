@@ -1,0 +1,6 @@
+# prototype/.gitignore
+
+fio-src/
+*.so
+*.pyc
+__pycache__/

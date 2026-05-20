@@ -1,0 +1,13 @@
+# prototype/jobs/smoke_test_write.fio
+
+[global]
+ioengine=external:./libgcsfs_fio_engine.so
+flush_every_write=0
+bs=1M
+size=16M
+numjobs=1
+iodepth=1
+filename=gcsfs-fio-benchmark/testfile
+
+[write_job]
+rw=write
