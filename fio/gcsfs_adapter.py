@@ -23,8 +23,8 @@ _fs = None
 _handles = {}
 _handle_lock = threading.Lock()
 _next_handle_id = 1
-_completions = queue.Queue()
 _iodepth = 64
+_trampoline_fn = None
 
 # Lock to prevent race conditions during multi-threaded init
 _init_lock = threading.Lock()
@@ -130,10 +130,10 @@ def _start_background_loop(loop):
 def _completion_callback(f: Future, tag: int):
     try:
         f.result()
-        _completions.put((tag, 0))  # Success
+        _trampoline_fn(tag, 0)  # Success
     except Exception as e:
         logger.error(f"Async IO failed: {e}")
-        _completions.put((tag, -1))  # Error
+        _trampoline_fn(tag, -1)  # Error
 
 
 async def _do_async_read(ctx: ReaderContext, offset: int, size: int, buffer_view):
@@ -190,8 +190,8 @@ async def _do_open_writer(filename, total_size) -> str:
 # -------------------------------------------------------------------------
 
 
-def py_init(iodepth):
-    global _loop, _loop_thread, _iodepth
+def py_init(iodepth, trampoline_ptr):
+    global _loop, _loop_thread, _iodepth, _trampoline_fn
 
     with _init_lock:
         if _loop is not None:
@@ -199,6 +199,9 @@ def py_init(iodepth):
 
         try:
             _iodepth = iodepth
+            CALLBACK_TYPE = ctypes.CFUNCTYPE(None, ctypes.c_void_p, ctypes.c_int)
+            _trampoline_fn = CALLBACK_TYPE(trampoline_ptr)
+
             import uvloop
 
             asyncio.set_event_loop_policy(uvloop.EventLoopPolicy())
@@ -297,16 +300,4 @@ def py_queue(handle, tag, offset, buffer_view, is_write):
         return -1
 
 
-def py_get_events(min_events):
-    results = []
-    # Try to fetch requested number of events
-    for _ in range(min_events):
-        results.append(_completions.get())
-
-    # Drain any extras that are ready immediately
-    while True:
-        try:
-            results.append(_completions.get_nowait())
-        except queue.Empty:
-            break
-    return results
+# py_get_events is no longer used since completion path is handled GIL-free in C
