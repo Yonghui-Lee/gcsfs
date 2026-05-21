@@ -46,6 +46,12 @@ struct py_thread_data {
     int events_index;
 };
 
+struct gcsfs_io_u_data {
+    void *memview;
+    char *cached_buf;
+    unsigned long long cached_len;
+};
+
 static struct py_thread_data *global_ptd = NULL;
 static PyThreadState *main_tstate = NULL;
 
@@ -269,32 +275,64 @@ static int py_storage_close(struct thread_data *td, struct fio_file *f) {
     return 0;
 }
 
+static int py_gcsfs_io_u_init(struct thread_data *td, struct io_u *io_u) {
+    struct gcsfs_io_u_data *iud = calloc(1, sizeof(*iud));
+    if (!iud) return 1;
+    io_u->engine_data = iud;
+    return 0;
+}
+
+static void py_gcsfs_io_u_free(struct thread_data *td, struct io_u *io_u) {
+    struct gcsfs_io_u_data *iud = io_u->engine_data;
+    if (iud) {
+        if (iud->memview) {
+            PyGILState_STATE gstate = PyGILState_Ensure();
+            Py_DECREF((PyObject *)iud->memview);
+            PyGILState_Release(gstate);
+        }
+        free(iud);
+        io_u->engine_data = NULL;
+    }
+}
+
 static enum fio_q_status py_storage_queue(struct thread_data *td, struct io_u *io_u) {
     PyGILState_STATE gstate = PyGILState_Ensure();
 
     long handle = (long)(uintptr_t)io_u->file->engine_data;
     int is_write = (io_u->ddir == DDIR_WRITE);
+    struct gcsfs_io_u_data *iud = io_u->engine_data;
 
-    // Zero-Copy Magic: Create a MemoryView directly on the FIO C buffer.
-    // Python can write directly into this (for reads) or read from it (for writes).
-    PyObject *py_buf = PyMemoryView_FromMemory(
-        (char *)io_u->xfer_buf,
-        io_u->xfer_buflen,
-        is_write ? PyBUF_READ : PyBUF_WRITE
-    );
+    // Zero-Copy Magic: Create/reuse a MemoryView directly on the FIO C buffer.
+    if (!iud->memview || iud->cached_buf != io_u->xfer_buf || iud->cached_len != io_u->xfer_buflen) {
+        if (iud->memview) {
+            Py_DECREF((PyObject *)iud->memview);
+        }
+        iud->memview = PyMemoryView_FromMemory(
+            (char *)io_u->xfer_buf,
+            io_u->xfer_buflen,
+            is_write ? PyBUF_READ : PyBUF_WRITE
+        );
+        if (!iud->memview) {
+            PyErr_Print();
+            PyGILState_Release(gstate);
+            io_u->error = EIO;
+            return FIO_Q_COMPLETED;
+        }
+        iud->cached_buf = io_u->xfer_buf;
+        iud->cached_len = io_u->xfer_buflen;
+    }
 
     // We pass the io_u pointer address as the 'tag' so we can identify it later
     PyObject *args = PyTuple_Pack(5,
         PyLong_FromLong(handle),
         PyLong_FromVoidPtr(io_u),
         PyLong_FromLongLong(io_u->offset),
-        py_buf,
+        (PyObject *)iud->memview,
         PyBool_FromLong(is_write)
     );
 
     PyObject *result = PyObject_CallObject(pFuncQueue, args);
     Py_DECREF(args);
-    Py_DECREF(py_buf);
 
     enum fio_q_status ret = FIO_Q_COMPLETED;
     if (result == NULL) {
@@ -408,6 +446,8 @@ struct ioengine_ops ioengine = {
     .queue = py_storage_queue,
     .getevents = py_storage_getevents,
     .event = py_storage_event,
+    .io_u_init = py_gcsfs_io_u_init,
+    .io_u_free = py_gcsfs_io_u_free,
     .flags = FIO_DISKLESSIO | FIO_NOEXTEND | FIO_NODISKUTIL,
     .options = options,
     .option_struct_size = sizeof(struct py_options),
