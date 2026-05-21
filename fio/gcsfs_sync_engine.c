@@ -30,6 +30,7 @@ static pthread_mutex_t import_mutex = PTHREAD_MUTEX_INITIALIZER;
 struct py_sync_options {
     void *pad;
     unsigned int block_size;
+    unsigned int use_prefetch;
 };
 
 static struct fio_option options[] = {
@@ -40,6 +41,16 @@ static struct fio_option options[] = {
         .off1 = offsetof(struct py_sync_options, block_size),
         .def = "16777216", // 16MB default
         .help = "Read-ahead buffer block size in bytes",
+        .category = FIO_OPT_C_ENGINE,
+        .group = FIO_OPT_G_INVALID,
+    },
+    {
+        .name = "use_prefetch",
+        .lname = "use_prefetch",
+        .type = FIO_OPT_BOOL,
+        .off1 = offsetof(struct py_sync_options, use_prefetch),
+        .def = "0",
+        .help = "Enable adaptive background prefetcher (requires read mode)",
         .category = FIO_OPT_C_ENGINE,
         .group = FIO_OPT_G_INVALID,
     },
@@ -135,10 +146,11 @@ static int py_sync_storage_open(struct thread_data *td, struct fio_file *f) {
     PyGILState_STATE gstate = PyGILState_Ensure();
 
     // Invoke open callback passing open context parameters
-    PyObject *args = PyTuple_Pack(3,
+    PyObject *args = PyTuple_Pack(4,
         PyUnicode_FromString(f->file_name),
         PyBool_FromLong(is_write),
-        PyLong_FromLong(o->block_size)
+        PyLong_FromLong(o->block_size),
+        PyBool_FromLong(o->use_prefetch)
     );
 
     PyObject *result = PyObject_CallObject(pFuncOpen, args);

@@ -1,0 +1,16 @@
+# fio/jobs/seqread_prefetch_zonal.fio
+
+[global]
+ioengine=external:./libgcsfs_sync_fio_engine.so
+bs=1M
+size=10G
+time_based=1
+runtime=30s
+group_reporting=1
+filename=yonghui-gcsfs-test-zonal/10g_file
+
+# Enable the adaptive background prefetcher
+use_prefetch=1
+
+[seqread_prefetch_zonal_job]
+rw=read
