@@ -29,21 +29,10 @@ static pthread_mutex_t import_mutex = PTHREAD_MUTEX_INITIALIZER;
  */
 struct py_sync_options {
     void *pad;
-    char *cache_type;
     unsigned int block_size;
 };
 
 static struct fio_option options[] = {
-    {
-        .name = "cache_type",
-        .lname = "cache_type",
-        .type = FIO_OPT_STR_STORE,
-        .off1 = offsetof(struct py_sync_options, cache_type),
-        .def = "none",
-        .help = "Select standard GCSFS file cache strategy (none, readahead, readahead_chunked)",
-        .category = FIO_OPT_C_ENGINE,
-        .group = FIO_OPT_G_INVALID,
-    },
     {
         .name = "block_size",
         .lname = "block_size",
@@ -146,10 +135,9 @@ static int py_sync_storage_open(struct thread_data *td, struct fio_file *f) {
     PyGILState_STATE gstate = PyGILState_Ensure();
 
     // Invoke open callback passing open context parameters
-    PyObject *args = PyTuple_Pack(4,
+    PyObject *args = PyTuple_Pack(3,
         PyUnicode_FromString(f->file_name),
         PyBool_FromLong(is_write),
-        PyUnicode_FromString(o->cache_type),
         PyLong_FromLong(o->block_size)
     );
 

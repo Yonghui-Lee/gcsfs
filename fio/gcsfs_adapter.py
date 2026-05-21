@@ -199,9 +199,9 @@ def py_open(filename, is_write, flush_writes=False, total_size=0):
             ctx = WriterContext(filename, location, total_size, flush_writes)
             return _register_handle(ctx)
         else:
-            # Read mode: Use gcs.open() to match micro-benchmarks and reuse gRPC streams
-            # block_size and cache_type="none" are used to ensure fio controls all I/O
-            f = _fs.open(filename, "rb", cache_type="none", concurrency=_iodepth)
+            # Read mode: Use gcs.open() with default cache to maximize throughput
+            # and reuse gRPC streams, matching standard GCSFS performance patterns.
+            f = _fs.open(filename, "rb", concurrency=_iodepth)
             ctx = ReaderContext(filename, f=f)
             return _register_handle(ctx)
 

@@ -8,7 +8,6 @@ numjobs=1
 filename=gcsfs-fio-benchmark/testfile
 
 # Configure fsspec's readahead_chunked cache strategy
-cache_type=readahead_chunked
 block_size=8388608 # 8MB cache chunk size
 
 [sync_readahead_chunked_job]

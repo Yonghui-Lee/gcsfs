@@ -9,7 +9,6 @@ filename=gcsfs-fio-benchmark/testfile
 
 # We can specify different cache settings to verify correctness and performance.
 # Available strategies: none, readahead, readahead_chunked
-cache_type=none
 block_size=16777216
 
 [sync_read_job]

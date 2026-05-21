@@ -2,11 +2,11 @@
 ioengine=external:./libgcsfs_fio_engine.so
 bs=1M
 iodepth=16
-size=1G
+size=10G
 time_based=1
 runtime=30s
 group_reporting=1
-filename=yonghui-gcsfs-test-zonal/1g_file
+filename=yonghui-gcsfs-test-zonal/10g_file
 
 [seqread_1m_multi]
 rw=read

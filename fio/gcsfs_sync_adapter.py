@@ -69,13 +69,13 @@ def py_sync_init():
             return -1
 
 
-def py_sync_open(filename, is_write, cache_type, block_size):
+def py_sync_open(filename, is_write, block_size):
     try:
         mode = "wb" if is_write else "rb"
 
         # Open file in standard sync mode using GCSFS _fs.open
-        # Passes user-supplied block_size and cache_type from FIO options
-        f = _fs.open(filename, mode, cache_type=cache_type, block_size=block_size)
+        # Using GCSFS default caching strategy
+        f = _fs.open(filename, mode, block_size=block_size)
         return _register_handle(f)
     except Exception as e:
         logger.error(f"Sync Open failed for {filename} (mode={mode}): {e}")
