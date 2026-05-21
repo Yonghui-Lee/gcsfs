@@ -58,15 +58,15 @@ static PyThreadState *main_tstate = NULL;
 static inline int ring_push(struct py_spsc_ring *ring, struct io_u *io_u, int error) {
     unsigned int t = atomic_load_explicit(&ring->tail, memory_order_relaxed);
     unsigned int h = atomic_load_explicit(&ring->head, memory_order_acquire);
-    
+
     if ((t - h) >= RING_BUFFER_SIZE) {
         return -1; // Queue full
     }
-    
+
     unsigned int idx = t & (RING_BUFFER_SIZE - 1);
     ring->events[idx].io_u = io_u;
     ring->events[idx].error = error;
-    
+
     atomic_store_explicit(&ring->tail, t + 1, memory_order_release);
     return 0;
 }
@@ -74,31 +74,31 @@ static inline int ring_push(struct py_spsc_ring *ring, struct io_u *io_u, int er
 static inline int ring_pop(struct py_spsc_ring *ring, struct reaped_event *out_event) {
     unsigned int h = atomic_load_explicit(&ring->head, memory_order_relaxed);
     unsigned int t = atomic_load_explicit(&ring->tail, memory_order_acquire);
-    
+
     if (h == t) {
         return -1; // Queue empty
     }
-    
+
     unsigned int idx = h & (RING_BUFFER_SIZE - 1);
     *out_event = ring->events[idx];
-    
+
     atomic_store_explicit(&ring->head, h + 1, memory_order_release);
     return 0;
 }
 
 void c_complete_trampoline(void *io_u_ptr, int err) {
     struct io_u *io_u = (struct io_u *)io_u_ptr;
-    
+
     if (!global_ptd) {
         fprintf(stderr, "c_complete_trampoline called before global_ptd was set!\n");
         return;
     }
-    
+
     if (ring_push(&global_ptd->ring, io_u, err) < 0) {
         fprintf(stderr, "SPSC Ring Buffer overflow in c_complete_trampoline!\n");
         return;
     }
-    
+
     eventfd_t val = 1;
     if (eventfd_write(global_ptd->event_fd, val) < 0) {
         perror("eventfd_write failed in trampoline");
@@ -193,8 +193,8 @@ static int py_storage_init(struct thread_data *td) {
     // 3. Initialize the Python-side logic (Global Loop & Client)
     PyGILState_STATE gstate = PyGILState_Ensure();
 
-    PyObject *args = PyTuple_Pack(2, 
-        PyLong_FromLong(td->o.iodepth), 
+    PyObject *args = PyTuple_Pack(2,
+        PyLong_FromLong(td->o.iodepth),
         PyLong_FromVoidPtr((void *)c_complete_trampoline)
     );
     PyObject *result = PyObject_CallObject(pFuncInit, args);
@@ -359,17 +359,17 @@ static enum fio_q_status py_storage_queue(struct thread_data *td, struct io_u *i
  */
 static int py_storage_getevents(struct thread_data *td, unsigned int min, unsigned int max, const struct timespec *t) {
     struct py_thread_data *ptd = td->io_ops_data;
-    
+
     ptd->events_count = 0;
     ptd->events_index = 0;
-    
+
     int timeout_ms = -1;
     if (t) {
         timeout_ms = t->tv_sec * 1000 + t->tv_nsec / 1000000;
     }
-    
+
     unsigned int reaped = 0;
-    
+
     while (reaped < max) {
         struct reaped_event ev;
         if (ring_pop(&ptd->ring, &ev) == 0) {
@@ -377,19 +377,19 @@ static int py_storage_getevents(struct thread_data *td, unsigned int min, unsign
             reaped++;
             continue;
         }
-        
+
         if (reaped >= min) {
             break;
         }
-        
+
         struct pollfd pfd;
         pfd.fd = ptd->event_fd;
         pfd.events = POLLIN;
-        
+
         if (timeout_ms == 0) {
             break;
         }
-        
+
         int poll_ret = poll(&pfd, 1, timeout_ms);
         if (poll_ret < 0) {
             if (errno == EINTR) {
@@ -408,7 +408,7 @@ static int py_storage_getevents(struct thread_data *td, unsigned int min, unsign
             }
         }
     }
-    
+
     ptd->events_count = reaped;
     return reaped;
 }
@@ -419,20 +419,20 @@ static int py_storage_getevents(struct thread_data *td, unsigned int min, unsign
  */
 static struct io_u *py_storage_event(struct thread_data *td, int event) {
     struct py_thread_data *ptd = td->io_ops_data;
-    
+
     if (event >= ptd->events_count) {
         return NULL;
     }
-    
+
     struct io_u *io_u = ptd->events[event].io_u;
     int err = ptd->events[event].error;
-    
+
     if (err != 0) {
         io_u->error = EIO;
     } else {
         io_u->error = 0;
     }
-    
+
     return io_u;
 }
 

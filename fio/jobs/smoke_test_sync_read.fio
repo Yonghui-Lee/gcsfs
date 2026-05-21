@@ -1,0 +1,16 @@
+# fio/jobs/smoke_test_sync_read.fio
+
+[global]
+ioengine=external:./libgcsfs_sync_fio_engine.so
+bs=1M
+size=16M
+numjobs=1
+filename=gcsfs-fio-benchmark/testfile
+
+# We can specify different cache settings to verify correctness and performance.
+# Available strategies: none, readahead, readahead_chunked
+cache_type=none
+block_size=16777216
+
+[sync_read_job]
+rw=read

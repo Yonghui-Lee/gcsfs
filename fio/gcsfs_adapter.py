@@ -3,7 +3,6 @@
 import asyncio
 import ctypes
 import logging
-import queue
 import threading
 from concurrent.futures import Future
 
@@ -109,7 +108,7 @@ async def _do_async_read(ctx: ReaderContext, offset: int, size: int, buffer_view
     data = await ctx.f._async_fetch_range(offset, size)
 
     # Copy downloaded bytes directly to FIO's C buffer using zero-copy cast and slice assignment
-    buffer_view.cast('B')[:len(data)] = data
+    buffer_view.cast("B")[: len(data)] = data
 
 
 async def _do_async_write(ctx: WriterContext, offset: int, data: bytes):

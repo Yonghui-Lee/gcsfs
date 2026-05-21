@@ -1,0 +1,15 @@
+# fio/jobs/smoke_test_sync_read_readahead_chunked.fio
+
+[global]
+ioengine=external:./libgcsfs_sync_fio_engine.so
+bs=1M
+size=16M
+numjobs=1
+filename=gcsfs-fio-benchmark/testfile
+
+# Configure fsspec's readahead_chunked cache strategy
+cache_type=readahead_chunked
+block_size=8388608 # 8MB cache chunk size
+
+[sync_readahead_chunked_job]
+rw=read

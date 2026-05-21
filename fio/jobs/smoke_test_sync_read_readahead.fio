@@ -1,0 +1,15 @@
+# fio/jobs/smoke_test_sync_read_readahead.fio
+
+[global]
+ioengine=external:./libgcsfs_sync_fio_engine.so
+bs=1M
+size=16M
+numjobs=1
+filename=gcsfs-fio-benchmark/testfile
+
+# Configure fsspec's standard read-ahead cache
+cache_type=readahead
+block_size=8388608 # 8MB read-ahead block size
+
+[sync_readahead_job]
+rw=read
