@@ -107,6 +107,19 @@ def py_sync_init():
     return 0
 
 
+def py_sync_get_file_size(filename):
+    try:
+        protocol, path = _get_protocol_and_path(filename)
+        fs = _get_fs(protocol)
+        info = fs.info(path)
+        return info.get("size", -1)
+    except FileNotFoundError:
+        return -1
+    except Exception as e:
+        logger.debug(f"Failed to get size for {filename}: {e}")
+        return -1
+
+
 def py_sync_open(
     filename, is_write, block_size, use_prefetch=True, concurrency=None, cache_type=None
 ):

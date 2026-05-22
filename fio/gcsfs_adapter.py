@@ -103,9 +103,13 @@ def _completion_callback(f: Future, tag: int):
 
 
 async def _do_async_read(ctx: ReaderContext, offset: int, size: int, buffer_view):
-    # Fetch the range asynchronously using the file object's internal async fetch
-    # This ensures parity with the high-level API used in micro-benchmarks
-    data = await ctx.f._async_fetch_range(offset, size)
+    if hasattr(ctx.f, "_async_fetch_range"):
+        data = await ctx.f._async_fetch_range(offset, size)
+    else:
+        def _read():
+            ctx.f.seek(offset)
+            return ctx.f.read(size)
+        data = await asyncio.get_running_loop().run_in_executor(None, _read)
 
     # Copy downloaded bytes directly to FIO's C buffer using zero-copy cast and slice assignment
     buffer_view.cast("B")[: len(data)] = data
@@ -187,6 +191,27 @@ def py_init(iodepth, trampoline_ptr):
         except Exception as e:
             logger.error(f"Init failed: {e}")
             return -1
+
+
+async def _do_get_file_size(filename):
+    info = await _fs._info(filename)
+    return info.get("size", -1)
+
+
+def py_get_file_size(filename):
+    try:
+        if _fs is None:
+            from gcsfs.core import GCSFileSystem
+            fs = GCSFileSystem(asynchronous=False)
+            return fs.info(filename).get("size", -1)
+        
+        future = asyncio.run_coroutine_threadsafe(_do_get_file_size(filename), _loop)
+        return future.result(timeout=10)
+    except FileNotFoundError:
+        return -1
+    except Exception as e:
+        logger.debug(f"Failed to get size for {filename}: {e}")
+        return -1
 
 
 def py_open(filename, is_write, flush_writes=False, total_size=0):

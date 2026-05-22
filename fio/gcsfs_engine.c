@@ -21,6 +21,7 @@ static PyObject *pFuncInit = NULL;
 static PyObject *pFuncOpen = NULL;
 static PyObject *pFuncClose = NULL;
 static PyObject *pFuncQueue = NULL;
+static PyObject *pFuncGetSize = NULL;
 
 #define RING_BUFFER_SIZE 1024
 
@@ -133,10 +134,77 @@ static struct fio_option options[] = {
 /*
  * Initialize the Python Interpreter and import our module.
  */
+/*
+ * Initialize the GCSFS lockless async engine. Enforces process-only mode (thread=0).
+ */
 static int py_storage_init(struct thread_data *td) {
-    // 1. Initialize Python (only once per process)
+    if (td->o.use_thread) {
+        log_err("fio: The GCSFS engine does NOT support the thread model (thread=1 / use_thread).\n");
+        log_err("fio: Please use the process model instead (thread=0) to benchmark GCSFS.\n");
+        return 1;
+    }
+    return 0;
+}
+
+static void py_storage_cleanup(struct thread_data *td) {
+    struct py_thread_data *ptd = td->io_ops_data;
+    if (ptd) {
+        if (ptd->event_fd >= 0) {
+            close(ptd->event_fd);
+        }
+        if (global_ptd == ptd) {
+            global_ptd = NULL;
+        }
+        free(ptd);
+        td->io_ops_data = NULL;
+    }
+}
+
+static int run_subprocess_gcs_size(const char *filename, uint64_t *out_size) {
+    char command[1024];
+    snprintf(command, sizeof(command),
+             "python3 -c \"import gcsfs; "
+             "fs = gcsfs.GCSFileSystem(); "
+             "print(fs.info('%s').get('size', -1))\" 2>/dev/null",
+             filename);
+
+    FILE *fp = popen(command, "r");
+    if (!fp) {
+        return -1;
+    }
+
+    char response[128];
+    if (fgets(response, sizeof(response), fp) == NULL) {
+        pclose(fp);
+        return -1;
+    }
+
+    int status = pclose(fp);
+    if (status != 0) {
+        return -1;
+    }
+
+    long long size_val = -1;
+    if (sscanf(response, "%lld", &size_val) != 1 || size_val < 0) {
+        return -1;
+    }
+
+    *out_size = (uint64_t)size_val;
+    return 0;
+}
+
+static pthread_mutex_t init_mutex = PTHREAD_MUTEX_INITIALIZER;
+static int py_is_runtime_initialized = 0;
+
+static int py_init_runtime_deferred(struct thread_data *td) {
+    pthread_mutex_lock(&init_mutex);
+
+    if (py_is_runtime_initialized) {
+        pthread_mutex_unlock(&init_mutex);
+        return 0;
+    }
+
     if (!Py_IsInitialized()) {
-        // Force libpython symbols to be globally visible before initializing
         void *libpython = dlopen(PY_SONAME, RTLD_GLOBAL | RTLD_NOW);
         if (!libpython) {
             fprintf(stderr, "Warning: Failed to dlopen %s globally: %s\n", PY_SONAME, dlerror());
@@ -144,13 +212,11 @@ static int py_storage_init(struct thread_data *td) {
 
         Py_Initialize();
 
-        // Add current directory to sys.path so we can find gcsfs_adapter.py
         PyObject *sysPath = PySys_GetObject("path");
         PyObject *cwd = PyUnicode_FromString(".");
         PyList_Append(sysPath, cwd);
         Py_DECREF(cwd);
 
-        // Import the module
         PyObject *pName = PyUnicode_FromString("gcsfs_adapter");
         pModule = PyImport_Import(pName);
         Py_DECREF(pName);
@@ -158,25 +224,27 @@ static int py_storage_init(struct thread_data *td) {
         if (pModule == NULL) {
             PyErr_Print();
             fprintf(stderr, "Failed to load module 'gcsfs_adapter'\n");
+            pthread_mutex_unlock(&init_mutex);
             return 1;
         }
 
-        // Look up functions
         pFuncInit = PyObject_GetAttrString(pModule, "py_init");
         pFuncOpen = PyObject_GetAttrString(pModule, "py_open");
         pFuncClose = PyObject_GetAttrString(pModule, "py_close");
         pFuncQueue = PyObject_GetAttrString(pModule, "py_queue");
+        pFuncGetSize = PyObject_GetAttrString(pModule, "py_get_file_size");
 
-        if (!pFuncInit || !pFuncOpen || !pFuncClose || !pFuncQueue) {
+        if (!pFuncInit || !pFuncOpen || !pFuncClose || !pFuncQueue || !pFuncGetSize) {
             if (PyErr_Occurred()) PyErr_Print();
             fprintf(stderr, "Failed to find required Python functions.\n");
+            pthread_mutex_unlock(&init_mutex);
             return 1;
         }
 
         main_tstate = PyEval_SaveThread();
     }
 
-    // 2. Setup thread-local data
+    // Setup thread-local data
     struct py_thread_data *ptd = calloc(1, sizeof(struct py_thread_data));
     td->io_ops_data = ptd;
 
@@ -185,12 +253,13 @@ static int py_storage_init(struct thread_data *td) {
         perror("Failed to create eventfd");
         free(ptd);
         td->io_ops_data = NULL;
+        pthread_mutex_unlock(&init_mutex);
         return 1;
     }
 
     global_ptd = ptd;
 
-    // 3. Initialize the Python-side logic (Global Loop & Client)
+    // Initialize the Python-side logic (Global Loop & Client)
     PyGILState_STATE gstate = PyGILState_Ensure();
 
     PyObject *args = PyTuple_Pack(2,
@@ -211,24 +280,63 @@ static int py_storage_init(struct thread_data *td) {
     }
 
     PyGILState_Release(gstate);
-    return success;
-}
 
-static void py_storage_cleanup(struct thread_data *td) {
-    struct py_thread_data *ptd = td->io_ops_data;
-    if (ptd) {
-        if (ptd->event_fd >= 0) {
-            close(ptd->event_fd);
-        }
-        if (global_ptd == ptd) {
-            global_ptd = NULL;
-        }
+    if (success != 0) {
+        close(ptd->event_fd);
         free(ptd);
         td->io_ops_data = NULL;
+        global_ptd = NULL;
+        pthread_mutex_unlock(&init_mutex);
+        return 1;
     }
+
+    py_is_runtime_initialized = 1;
+    pthread_mutex_unlock(&init_mutex);
+    return 0;
+}
+
+/*
+ * Determine the real file size (using static logic and popen sub-process query).
+ */
+static int py_storage_get_file_size(struct thread_data *td, struct fio_file *f) {
+    if (fio_file_size_known(f))
+        return 0;
+
+    uint64_t gcs_size = 0;
+    int has_gcs = 0;
+
+    // 1. Query GCS size via separate standalone Python sub-process
+    if (run_subprocess_gcs_size(f->file_name, &gcs_size) == 0) {
+        has_gcs = 1;
+    }
+
+    uint64_t final_size = has_gcs ? gcs_size : 0;
+    int found = has_gcs;
+
+    // 2. Override boundaries based on filesize parameter
+    if (td->o.file_size_low > final_size) {
+        final_size = td->o.file_size_low;
+        found = 1;
+    }
+
+    // 3. Override boundaries based on job offset/size specs
+    uint64_t expected_job_size = td->o.start_offset + td->o.size;
+    if (expected_job_size > final_size) {
+        final_size = expected_job_size;
+        found = 1;
+    }
+
+    if (found) {
+        f->real_file_size = final_size;
+        fio_file_set_size_known(f);
+    }
+    return 0;
 }
 
 static int py_storage_open(struct thread_data *td, struct fio_file *f) {
+    if (py_init_runtime_deferred(td))
+        return 1;
+
     PyGILState_STATE gstate = PyGILState_Ensure();
 
     struct py_options *o = td->eo;
@@ -443,6 +551,7 @@ struct ioengine_ops ioengine = {
     .cleanup = py_storage_cleanup,
     .open_file = py_storage_open,
     .close_file = py_storage_close,
+    .get_file_size = py_storage_get_file_size,
     .queue = py_storage_queue,
     .getevents = py_storage_getevents,
     .event = py_storage_event,
