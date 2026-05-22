@@ -9,7 +9,7 @@ PY_CFLAGS = $(shell python3-config --cflags --embed)
 PY_LDFLAGS = $(shell python3-config --ldflags --embed)
 PY_SONAME = $(shell python3 -c "import sysconfig; print(sysconfig.get_config_var('INSTSONAME'))")
 
-.PHONY: all clean clean-all help check-bucket run-smoke-async run-smoke-sync run-smoke-all
+.PHONY: all clean clean-all help check-bucket run-smoke-async run-smoke-sync run-smoke-local run-smoke-all
 
 # Default target compiles all engines
 all: libgcsfs_fio_engine.so libgcsfs_sync_fio_engine.so
@@ -76,6 +76,13 @@ run-smoke-sync: all check-bucket
 	./run.sh jobs/smoke_test_sync_read.fio
 	./run.sh jobs/smoke_test_sync_read_readahead.fio
 
+run-smoke-local: all
+	@echo "=============================================================================="
+	@echo " Running Local Storage Engine Smoke Tests (No cloud bucket required)"
+	@echo "=============================================================================="
+	./run.sh jobs/smoke_test_sync_write_local.fio
+	./run.sh jobs/smoke_test_sync_read_local.fio
+
 run-smoke-all: run-smoke-async run-smoke-sync
 	@echo "=============================================================================="
 	@echo " All smoke tests completed successfully on gs://$(BUCKET_NAME)!"
@@ -94,8 +101,9 @@ help:
 	@echo "  make clean           Remove compiled shared engines"
 	@echo "  make clean-all       Remove compiled engines and downloaded FIO headers"
 	@echo ""
-	@echo "Benchmark Commands (Requires export BUCKET_NAME=your-gcs-bucket):"
-	@echo "  make run-smoke-all   Run all write/read smoke tests in sequence"
-	@echo "  make run-smoke-async Run only the lockless async engine smoke tests"
-	@echo "  make run-smoke-sync  Run only the pure synchronous engine smoke tests"
+	@echo "Benchmark Commands:"
+	@echo "  make run-smoke-all   Run all cloud write/read smoke tests (requires BUCKET_NAME)"
+	@echo "  make run-smoke-async Run only the lockless async engine cloud smoke tests"
+	@echo "  make run-smoke-sync  Run only the pure synchronous engine cloud smoke tests"
+	@echo "  make run-smoke-local Run the local storage synchronous engine smoke tests (no cloud required)"
 	@echo "=============================================================================="

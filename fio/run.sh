@@ -87,17 +87,19 @@ else
     fi
 fi
 
-# 5. Validate BUCKET_NAME environment variable when running job specs
-HAS_JOB_FILE=false
+# 5. Validate BUCKET_NAME environment variable when running job specs that require it
+NEEDS_BUCKET=false
 for arg in "$@"; do
-    if [[ "$arg" == *.fio ]]; then
-        HAS_JOB_FILE=true
-        break
+    if [[ "$arg" == *.fio ]] && [ -f "$arg" ]; then
+        if grep -q "BUCKET_NAME" "$arg"; then
+            NEEDS_BUCKET=true
+            break
+        fi
     fi
 done
 
-if [ "$HAS_JOB_FILE" = true ] && [ -z "${BUCKET_NAME}" ]; then
-    echo -e "\033[31;1mError: The 'BUCKET_NAME' environment variable is not set.\033[0m"
+if [ "$NEEDS_BUCKET" = true ] && [ -z "${BUCKET_NAME}" ]; then
+    echo -e "\033[31;1mError: The 'BUCKET_NAME' environment variable is not set but is required by the target job.\033[0m"
     echo -e "To target a specific Google Cloud Zonal (or regional) bucket, please export it first:"
     echo -e "  export BUCKET_NAME=\"my-zonal-bucket-name\""
     echo -e "Or run inline:"

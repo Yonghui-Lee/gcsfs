@@ -19,6 +19,10 @@ Depending on your benchmarking goals, you can choose between two distinct runtim
 * **Focus:** Real-world application fidelity and standard fsspec cache profiling.
 * **Mechanism:** Runs inline in the main FIO execution thread under standard Python GIL lifecycles. It completes block transfers synchronously on submission and returns `FIO_Q_COMPLETED` immediately.
 * **API Path:** Invokes standard, public Python file-like methods (`f.seek()`, `f.read()`, `f.write()`), allowing measurement of the exact network, serialization, and cache latency patterns of production user client code.
+* **Storage Backends & Protocols:** Supports any standard generic `fsspec` filesystem. The engine determines the filesystem based on path format:
+  * **Local Storage:** Any path starting with `/`, `./`, `../`, or prefixed with `file://` (e.g., `file:///tmp/fio_test`). This is fully self-contained and does not require Google Application Default Credentials (ADC).
+  * **Google Cloud Storage (GCS):** Standard paths without protocol (e.g., `my-bucket/file`) or prefixed with `gs://` (e.g., `gs://my-bucket/file`) use the low-latency `ExtendedGcsFileSystem`.
+  * **Other Protocols:** Any registered `fsspec` protocol (e.g., `s3://`, `abfs://`) is dynamically dispatched to its corresponding generic `fsspec` filesystem on demand.
 
 ---
 
@@ -65,11 +69,13 @@ Depending on your benchmarking goals, you can choose between two distinct runtim
 
 ---
 
-## 3. Quick Start on Google Cloud (Zonal HNS Buckets)
+## 3. Quick Start (Google Cloud or Local Storage)
 
-Follow these steps to build the engines, set up a high-performance Google Cloud Zonal HNS bucket, and execute standard benchmarks.
+Follow these steps to prepare the system and run either cloud-based or local file benchmarks.
 
-### Step 1: Install System Prerequisites
+### Prerequisites (Steps 1 & 2)
+
+#### Step 1: Install System Prerequisites
 Ensure you have FIO and Python development headers installed on your Linux host:
 
 ```bash
@@ -77,7 +83,7 @@ Ensure you have FIO and Python development headers installed on your Linux host:
 sudo apt-get update && sudo apt-get install -y fio libfuse3-dev python3-dev
 ```
 
-### Step 2: Compile the Engines
+#### Step 2: Compile the Engines
 Build both dynamic shared engines by running:
 ```bash
 make
@@ -86,14 +92,18 @@ This automatically downloads matching FIO source headers and compiles:
 * `libgcsfs_fio_engine.so` (Asynchronous engine)
 * `libgcsfs_sync_fio_engine.so` (Synchronous engine)
 
-### Step 3: Configure Authentication
+---
+
+### Option A: Google Cloud Benchmarks (Zonal HNS Buckets)
+
+#### Step A3: Configure Authentication
 Configure standard Google Application Default Credentials (ADC) to authorize access to your Google Cloud projects:
 ```bash
 gcloud auth application-default login
 ```
 Ensure your running user or service account has the **Storage Admin** role (`roles/storage.admin`) or **Storage Object Admin** role (`roles/storage.objectAdmin`) on the target project. This is a requirement for GCSFS's Storage Control API interaction (used under the hood to perform HNS bucket layout detection and atomic folder operations).
 
-### Step 4: Create a High-Performance Zonal HNS Bucket
+#### Step A4: Create a High-Performance Zonal HNS Bucket
 Zonal buckets are optimized for low latency and high throughput, making them ideal for high-performance benchmarks. You must enable uniform bucket-level access and the Hierarchical Namespace (HNS) feature at the time of creation:
 
 ```bash
@@ -107,7 +117,7 @@ gcloud storage buckets create gs://${BUCKET_NAME} \
     --uniform-bucket-level-access
 ```
 
-### Step 5: Run the Benchmark Smoke Tests
+#### Step A5: Run the Cloud Benchmark Smoke Tests
 Trigger the pre-configured smoke test suite against your new cloud Zonal bucket:
 ```bash
 # Ensure the variable is exported in your environment
@@ -115,6 +125,45 @@ export BUCKET_NAME="my-zonal-hns-bucket"
 
 make run-smoke-all
 ```
+
+---
+
+### Option B: Local fsspec Benchmarks (No Cloud/Credentials Required)
+
+If you don't have active GCP access or just want to benchmark standard local file operations with fsspec's caching configurations (such as standard read-ahead buffering), you can run entirely locally without cloud buckets or credentials!
+
+#### Step B3: Run the Local Benchmark Smoke Tests
+Trigger the pre-configured local storage benchmarks suite by running:
+```bash
+make run-smoke-local
+```
+This writes a 100MB temporary file to `./tmp/fio_local_test_file` and then reads it back using the synchronous engine with the standard `readahead` cache strategy enabled.
+
+You can also run specific local jobs directly via `./run.sh` without setting the `BUCKET_NAME` environment variable:
+```bash
+# Run local synchronous write benchmark
+./run.sh jobs/smoke_test_sync_write_local.fio
+
+# Run local synchronous read benchmark
+./run.sh jobs/smoke_test_sync_read_local.fio
+```
+
+#### Specifying Local Storage Paths in Custom Workloads
+To configure your own FIO workloads/job profiles to target local files, define the `filename` option in your `.fio` file using either of the following formats:
+
+* **Implicit Local Paths (Relative or Absolute):** Any path starting with `/`, `./`, or `../` is automatically routed to the local filesystem.
+  ```fio
+  filename=./tmp/fio_local_test_file
+  # OR: filename=/tmp/fio_local_test_file
+  ```
+
+* **Explicit URI Scheme (`file://`):** If your target file sits directly in the root of your current directory or you prefer explicit schemas:
+  ```fio
+  filename=file://my_benchmark_file.bin
+  # OR: filename=file:///tmp/fio_local_test_file
+  ```
+
+Under the hood, the engine dynamically routes these paths to standard `fsspec.filesystem("file")` and strips any GCS-exclusive capabilities (such as adaptive prefetching, connection pools, or multi-range vector cache properties). For writes, the engine also pre-creates parent folders automatically (like `./tmp/` or custom subdirectories) to ensure standard filesystems don't encounter folder missing errors.
 
 ---
 
@@ -181,6 +230,7 @@ block_size=8388608
   * `smoke_test_sync_read_readahead_chunked.fio`: Synchronous read utilizing chunked read-ahead caching (designed for high-speed Zonal HNS buckets).
   * `seqread_prefetch_zonal.fio`: Large 10G sequential read profile targeting dynamic background prefetching on a Zonal HNS bucket.
   * `seqread_16m_multi.fio` / `seqread_1m_multi.fio`: Zonal sequential read benchmarks with higher concurrency.
+  * `smoke_test_sync_write_local.fio` / `smoke_test_sync_read_local.fio`: Local storage smoke tests verifying standard write/read and fsspec caching overhead with no cloud dependencies.
 
 ---
 

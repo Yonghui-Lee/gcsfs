@@ -191,6 +191,25 @@ def py_init(iodepth, trampoline_ptr):
 
 def py_open(filename, is_write, flush_writes=False, total_size=0):
     try:
+        # Check protocol to verify it is a GCS path
+        import fsspec
+
+        protocol, path = fsspec.core.split_protocol(filename)
+        if protocol is None:
+            if not (
+                filename.startswith("/")
+                or filename.startswith("./")
+                or filename.startswith("../")
+            ):
+                protocol = "gs"
+
+        if protocol != "gs":
+            raise ValueError(
+                f"Lockless Async Engine only supports GCS paths (got {filename}). "
+                "Please use the Pure Synchronous Engine (libgcsfs_sync_fio_engine.so) "
+                "to benchmark local or other fsspec filesystems."
+            )
+
         if is_write:
             future = asyncio.run_coroutine_threadsafe(
                 _do_open_writer(filename, total_size), _loop
