@@ -1,0 +1,14 @@
+# fio/jobs/cloud_request_16m_48p.fio
+
+[global]
+ioengine=external:./libgcsfs_sync_fio_engine.so
+bs=16M
+size=30G
+numjobs=48
+filename=${BUCKET_NAME}/30g_file
+group_reporting=1
+time_based=1
+runtime=60
+
+[sequential_read]
+rw=read

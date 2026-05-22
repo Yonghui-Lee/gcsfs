@@ -1,0 +1,14 @@
+# fio/jobs/request_16m_48p.fio
+
+[global]
+ioengine=external:./libgcsfs_sync_fio_engine.so
+bs=16M
+size=2G
+numjobs=48
+filename=./bench_file.dat
+group_reporting=1
+time_based=1
+runtime=30
+
+[sequential_read]
+rw=read

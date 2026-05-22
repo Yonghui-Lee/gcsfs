@@ -31,6 +31,7 @@ dependencies = [
     "google-auth-oauthlib",
     "google-cloud-storage>=3.9.0",
     "google-cloud-storage-control",
+    "grpcio==1.82.0.dev0",
     "requests",
     "uvloop; platform_system != 'Windows'",
 ]
