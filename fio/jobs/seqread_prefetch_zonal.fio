@@ -3,11 +3,11 @@
 [global]
 ioengine=external:./libgcsfs_sync_fio_engine.so
 bs=1M
-size=10G
+size=1G
 time_based=1
 runtime=30s
 group_reporting=1
-filename=${BUCKET_NAME}/10g_file
+filename=${BUCKET_NAME}/1g_file
 
 # Enable the adaptive background prefetcher
 use_prefetch=1

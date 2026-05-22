@@ -69,7 +69,9 @@ def py_sync_init():
             return -1
 
 
-def py_sync_open(filename, is_write, block_size, use_prefetch=True, concurrency=None, cache_type=None):
+def py_sync_open(
+    filename, is_write, block_size, use_prefetch=True, concurrency=None, cache_type=None
+):
     try:
         mode = "wb" if is_write else "rb"
 
@@ -82,7 +84,7 @@ def py_sync_open(filename, is_write, block_size, use_prefetch=True, concurrency=
             cache_type = "none" if use_prefetch else None
 
         # Open file in standard sync mode using GCSFS _fs.open
-        # Concurrency is omitted here to allow it to fall back to the 
+        # Concurrency is omitted here to allow it to fall back to the
         # DEFAULT_GCSFS_CONCURRENCY environment variable set in the C engine.
         f = _fs.open(
             filename,

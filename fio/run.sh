@@ -39,12 +39,12 @@ def get_libpython():
     libdir = sysconfig.get_config_var('LIBDIR')
     ldlibrary = sysconfig.get_config_var('LDLIBRARY')
     instsoname = sysconfig.get_config_var('INSTSONAME')
-    
+
     candidates = []
     if libdir:
         if ldlibrary: candidates.append(Path(libdir) / ldlibrary)
         if instsoname: candidates.append(Path(libdir) / instsoname)
-            
+
     prefix = sysconfig.get_config_var('prefix')
     if prefix:
         libpath = Path(prefix) / 'lib'
@@ -52,7 +52,7 @@ def get_libpython():
             for ext in ('.so', '.so.1.0', '.dylib'):
                 for p in libpath.glob(f'libpython*{ext}'):
                     candidates.append(p)
-                    
+
     valid_candidates = []
     for c in candidates:
         try:
@@ -61,7 +61,7 @@ def get_libpython():
                 valid_candidates.append(c)
         except Exception:
             pass
-            
+
     if valid_candidates:
         for c in valid_candidates:
             if instsoname and c.name == instsoname: return str(c)

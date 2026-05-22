@@ -3,12 +3,12 @@
 [global]
 ioengine=external:./libgcsfs_sync_fio_engine.so
 bs=1M
-size=100G
+size=1G
 time_based=1
 runtime=60s
 ramp_time=5s
 group_reporting=1
-filename=${BUCKET_NAME}/write.0
+filename=${BUCKET_NAME}/1g_file
 
 [seqread_1m_single]
 rw=read
