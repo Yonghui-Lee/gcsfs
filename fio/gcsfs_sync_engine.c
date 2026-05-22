@@ -75,10 +75,18 @@ static struct fio_option options[] = {
  * Executed once per FIO job thread.
  */
 static int py_sync_storage_init(struct thread_data *td) {
+    struct py_sync_options *o = td->eo;
+
     pthread_mutex_lock(&import_mutex);
 
     // 1. Initialize Python Runtime (only once per process)
     if (!Py_IsInitialized()) {
+        // Set the default GCSFS concurrency environment variable before importing modules.
+        // This ensures that zb_hns_utils.py picks up the value during its initial import.
+        char buf[32];
+        snprintf(buf, sizeof(buf), "%u", o->concurrency);
+        setenv("DEFAULT_GCSFS_CONCURRENCY", buf, 1);
+
         // Force libpython symbols to be globally visible (crucial for loading native extension modules)
         void *libpython = dlopen(PY_SONAME, RTLD_GLOBAL | RTLD_NOW);
         if (!libpython) {
