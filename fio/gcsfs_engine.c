@@ -138,11 +138,6 @@ static struct fio_option options[] = {
  * Initialize the GCSFS lockless async engine. Enforces process-only mode (thread=0).
  */
 static int py_storage_init(struct thread_data *td) {
-    if (td->o.use_thread) {
-        log_err("fio: The GCSFS engine does NOT support the thread model (thread=1 / use_thread).\n");
-        log_err("fio: Please use the process model instead (thread=0) to benchmark GCSFS.\n");
-        return 1;
-    }
     return 0;
 }
 
@@ -193,6 +188,47 @@ static int run_subprocess_gcs_size(const char *filename, uint64_t *out_size) {
     return 0;
 }
 
+static int py_init_interpreter_internal(void) {
+    if (Py_IsInitialized()) return 0;
+
+    void *libpython = dlopen(PY_SONAME, RTLD_GLOBAL | RTLD_NOW);
+    if (!libpython) {
+        fprintf(stderr, "Warning: Failed to dlopen %s globally: %s\n", PY_SONAME, dlerror());
+    }
+
+    Py_Initialize();
+
+    PyObject *sysPath = PySys_GetObject("path");
+    PyObject *cwd = PyUnicode_FromString(".");
+    PyList_Append(sysPath, cwd);
+    Py_DECREF(cwd);
+
+    PyObject *pName = PyUnicode_FromString("gcsfs_adapter");
+    pModule = PyImport_Import(pName);
+    Py_DECREF(pName);
+
+    if (pModule == NULL) {
+        PyErr_Print();
+        fprintf(stderr, "Failed to load module 'gcsfs_adapter'\n");
+        return 1;
+    }
+
+    pFuncInit = PyObject_GetAttrString(pModule, "py_init");
+    pFuncOpen = PyObject_GetAttrString(pModule, "py_open");
+    pFuncClose = PyObject_GetAttrString(pModule, "py_close");
+    pFuncQueue = PyObject_GetAttrString(pModule, "py_queue");
+    pFuncGetSize = PyObject_GetAttrString(pModule, "py_get_file_size");
+
+    if (!pFuncInit || !pFuncOpen || !pFuncClose || !pFuncQueue || !pFuncGetSize) {
+        if (PyErr_Occurred()) PyErr_Print();
+        fprintf(stderr, "Failed to find required Python functions.\n");
+        return 1;
+    }
+
+    main_tstate = PyEval_SaveThread();
+    return 0;
+}
+
 static pthread_mutex_t init_mutex = PTHREAD_MUTEX_INITIALIZER;
 static int py_is_runtime_initialized = 0;
 
@@ -204,44 +240,9 @@ static int py_init_runtime_deferred(struct thread_data *td) {
         return 0;
     }
 
-    if (!Py_IsInitialized()) {
-        void *libpython = dlopen(PY_SONAME, RTLD_GLOBAL | RTLD_NOW);
-        if (!libpython) {
-            fprintf(stderr, "Warning: Failed to dlopen %s globally: %s\n", PY_SONAME, dlerror());
-        }
-
-        Py_Initialize();
-
-        PyObject *sysPath = PySys_GetObject("path");
-        PyObject *cwd = PyUnicode_FromString(".");
-        PyList_Append(sysPath, cwd);
-        Py_DECREF(cwd);
-
-        PyObject *pName = PyUnicode_FromString("gcsfs_adapter");
-        pModule = PyImport_Import(pName);
-        Py_DECREF(pName);
-
-        if (pModule == NULL) {
-            PyErr_Print();
-            fprintf(stderr, "Failed to load module 'gcsfs_adapter'\n");
-            pthread_mutex_unlock(&init_mutex);
-            return 1;
-        }
-
-        pFuncInit = PyObject_GetAttrString(pModule, "py_init");
-        pFuncOpen = PyObject_GetAttrString(pModule, "py_open");
-        pFuncClose = PyObject_GetAttrString(pModule, "py_close");
-        pFuncQueue = PyObject_GetAttrString(pModule, "py_queue");
-        pFuncGetSize = PyObject_GetAttrString(pModule, "py_get_file_size");
-
-        if (!pFuncInit || !pFuncOpen || !pFuncClose || !pFuncQueue || !pFuncGetSize) {
-            if (PyErr_Occurred()) PyErr_Print();
-            fprintf(stderr, "Failed to find required Python functions.\n");
-            pthread_mutex_unlock(&init_mutex);
-            return 1;
-        }
-
-        main_tstate = PyEval_SaveThread();
+    if (py_init_interpreter_internal() != 0) {
+        pthread_mutex_unlock(&init_mutex);
+        return 1;
     }
 
     // Setup thread-local data
@@ -295,26 +296,15 @@ static int py_init_runtime_deferred(struct thread_data *td) {
     return 0;
 }
 
-static uint64_t cached_gcs_size = 0;
-static int is_gcs_size_cached = 0;
-
 /*
- * Determine the real file size (using static logic and popen sub-process query).
+ * Determine the real file size (using subprocess to avoid contaminating master process).
  */
 static int py_storage_get_file_size(struct thread_data *td, struct fio_file *f) {
     uint64_t gcs_size = 0;
     int has_gcs = 0;
 
-    // 1. Query GCS size (with static caching to avoid redundant slow popen calls)
-    if (is_gcs_size_cached) {
-        gcs_size = cached_gcs_size;
+    if (run_subprocess_gcs_size(f->file_name, &gcs_size) == 0) {
         has_gcs = 1;
-    } else {
-        if (run_subprocess_gcs_size(f->file_name, &gcs_size) == 0) {
-            cached_gcs_size = gcs_size;
-            is_gcs_size_cached = 1;
-            has_gcs = 1;
-        }
     }
 
     uint64_t final_size = has_gcs ? gcs_size : 0;
