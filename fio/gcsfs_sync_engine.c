@@ -31,6 +31,7 @@ struct py_sync_options {
     void *pad;
     unsigned int block_size;
     unsigned int use_prefetch;
+    unsigned int concurrency;
 };
 
 static struct fio_option options[] = {
@@ -49,8 +50,18 @@ static struct fio_option options[] = {
         .lname = "use_prefetch",
         .type = FIO_OPT_BOOL,
         .off1 = offsetof(struct py_sync_options, use_prefetch),
-        .def = "0",
+        .def = "1",
         .help = "Enable adaptive background prefetcher (requires read mode)",
+        .category = FIO_OPT_C_ENGINE,
+        .group = FIO_OPT_G_INVALID,
+    },
+    {
+        .name = "concurrency",
+        .lname = "concurrency",
+        .type = FIO_OPT_INT,
+        .off1 = offsetof(struct py_sync_options, concurrency),
+        .def = "4",
+        .help = "Number of concurrent requests to fetch the data",
         .category = FIO_OPT_C_ENGINE,
         .group = FIO_OPT_G_INVALID,
     },
@@ -146,11 +157,12 @@ static int py_sync_storage_open(struct thread_data *td, struct fio_file *f) {
     PyGILState_STATE gstate = PyGILState_Ensure();
 
     // Invoke open callback passing open context parameters
-    PyObject *args = PyTuple_Pack(4,
+    PyObject *args = PyTuple_Pack(5,
         PyUnicode_FromString(f->file_name),
         PyBool_FromLong(is_write),
         PyLong_FromLong(o->block_size),
-        PyBool_FromLong(o->use_prefetch)
+        PyBool_FromLong(o->use_prefetch),
+        PyLong_FromLong(o->concurrency)
     );
 
     PyObject *result = PyObject_CallObject(pFuncOpen, args);

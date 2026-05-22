@@ -156,13 +156,15 @@ When configuring job specs targeting the external synchronous engine (`libgcsfs_
 ```fio
 [sync_readahead_job]
 rw=read
-cache_type=readahead
+use_prefetch=1
+concurrency=4
 block_size=8388608
 ```
 
 | Option Key | Data Type | Default Value | Description |
 | :--- | :--- | :--- | :--- |
-| `cache_type` | String | `"none"` | Standard caching strategy utilized when opening target objects (e.g. `"none"`, `"readahead"`, `"readahead_chunked"`). |
+| `use_prefetch` | Boolean | `1` (True) | Enable the adaptive background prefetcher (requires read mode). When enabled, it sets `cache_type` to `"none"` to avoid double-buffering and redundant memory copies. |
+| `concurrency` | Integer | `4` | Number of concurrent requests GCSFS uses to fetch data. |
 | `block_size` | Integer | `16777216` (16MB) | Read-ahead cache bounds buffer bounds passed directly to the GCSFS `fs.open()` API. |
 
 ---

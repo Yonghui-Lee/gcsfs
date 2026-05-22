@@ -69,7 +69,7 @@ def py_sync_init():
             return -1
 
 
-def py_sync_open(filename, is_write, block_size, use_prefetch=False):
+def py_sync_open(filename, is_write, block_size, use_prefetch=True, concurrency=4):
     try:
         mode = "wb" if is_write else "rb"
 
@@ -84,6 +84,7 @@ def py_sync_open(filename, is_write, block_size, use_prefetch=False):
             block_size=block_size,
             cache_type=cache_type,
             use_experimental_adaptive_prefetching=use_prefetch,
+            concurrency=concurrency,
         )
         return _register_handle(f)
     except Exception as e:
