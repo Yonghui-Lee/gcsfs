@@ -1,12 +1,11 @@
 # prototype/jobs/smoke_test_read.fio
 
 [global]
-ioengine=external:./libgcsfs_fio_engine.so
+ioengine=external:./libgcsfs_sync_fio_engine.so
 bs=1M
 size=16M
 numjobs=1
-iodepth=1
-filename=gcsfs-fio-benchmark/testfile
+filename=${BUCKET_NAME}/testfile
 
 [read_job]
 rw=read

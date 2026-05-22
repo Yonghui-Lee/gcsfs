@@ -7,7 +7,7 @@ size=10G
 time_based=1
 runtime=30s
 group_reporting=1
-filename=yonghui-gcsfs-test-zonal/10g_file
+filename=${BUCKET_NAME}/10g_file
 
 # Enable the adaptive background prefetcher
 use_prefetch=1

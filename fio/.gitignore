@@ -4,3 +4,4 @@ fio-src/
 *.so
 *.pyc
 __pycache__/
+*.log

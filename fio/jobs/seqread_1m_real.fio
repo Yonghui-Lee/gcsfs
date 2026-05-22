@@ -1,12 +1,11 @@
 [global]
-ioengine=external:./libgcsfs_fio_engine.so
+ioengine=external:./libgcsfs_sync_fio_engine.so
 bs=1M
-iodepth=64
 size=10G
 time_based=1
 runtime=30s
 group_reporting=1
-filename=yonghui-gcsfs-test-zonal/10g_file
+filename=${BUCKET_NAME}/10g_file
 
 [seqread_1m]
 rw=read

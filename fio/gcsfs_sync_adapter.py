@@ -69,13 +69,17 @@ def py_sync_init():
             return -1
 
 
-def py_sync_open(filename, is_write, block_size, use_prefetch=True, concurrency=None):
+def py_sync_open(filename, is_write, block_size, use_prefetch=True, concurrency=None, cache_type=None):
     try:
         mode = "wb" if is_write else "rb"
 
-        # If prefetch is explicitly requested, set cache_type to 'none' to avoid
-        # double-buffering and redundant memory copies, as recommended.
-        cache_type = "none" if use_prefetch else None
+        # If cache_type is explicitly specified, respect it.
+        # Otherwise, if prefetch is requested, default to cache_type="none" to avoid double-buffering.
+        if cache_type is not None:
+            if isinstance(cache_type, str) and cache_type.lower() == "none":
+                cache_type = "none"
+        else:
+            cache_type = "none" if use_prefetch else None
 
         # Open file in standard sync mode using GCSFS _fs.open
         # Concurrency is omitted here to allow it to fall back to the 

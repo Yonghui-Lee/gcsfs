@@ -32,6 +32,7 @@ struct py_sync_options {
     unsigned int block_size;
     unsigned int use_prefetch;
     unsigned int concurrency;
+    char *cache_type;
 };
 
 static struct fio_option options[] = {
@@ -62,6 +63,15 @@ static struct fio_option options[] = {
         .off1 = offsetof(struct py_sync_options, concurrency),
         .def = "4",
         .help = "Number of concurrent requests to fetch the data",
+        .category = FIO_OPT_C_ENGINE,
+        .group = FIO_OPT_G_INVALID,
+    },
+    {
+        .name = "cache_type",
+        .lname = "cache_type",
+        .type = FIO_OPT_STR_STORE,
+        .off1 = offsetof(struct py_sync_options, cache_type),
+        .help = "GCSFS cache strategy (e.g. none, readahead, readahead_chunked)",
         .category = FIO_OPT_C_ENGINE,
         .group = FIO_OPT_G_INVALID,
     },
@@ -165,13 +175,21 @@ static int py_sync_storage_open(struct thread_data *td, struct fio_file *f) {
     PyGILState_STATE gstate = PyGILState_Ensure();
 
     // Invoke open callback passing open context parameters
-    PyObject *args = PyTuple_Pack(5,
+    PyObject *cache_type_obj = o->cache_type ? PyUnicode_FromString(o->cache_type) : Py_None;
+    if (!cache_type_obj) {
+        cache_type_obj = Py_None;
+        Py_INCREF(Py_None);
+    }
+
+    PyObject *args = PyTuple_Pack(6,
         PyUnicode_FromString(f->file_name),
         PyBool_FromLong(is_write),
         PyLong_FromLong(o->block_size),
         PyBool_FromLong(o->use_prefetch),
-        PyLong_FromLong(o->concurrency)
+        PyLong_FromLong(o->concurrency),
+        cache_type_obj
     );
+    Py_DECREF(cache_type_obj);
 
     PyObject *result = PyObject_CallObject(pFuncOpen, args);
     Py_DECREF(args);
