@@ -210,19 +210,26 @@ static int py_sync_init_runtime_deferred(struct thread_data *td) {
     return 0;
 }
 
+static uint64_t cached_gcs_size = 0;
+static int is_gcs_size_cached = 0;
+
 /*
  * Determine the real file size (using static logic and popen sub-process query).
  */
 static int py_sync_storage_get_file_size(struct thread_data *td, struct fio_file *f) {
-    if (fio_file_size_known(f))
-        return 0;
-
     uint64_t gcs_size = 0;
     int has_gcs = 0;
 
-    // 1. Query GCS size via separate standalone Python sub-process
-    if (run_subprocess_gcs_size(f->file_name, &gcs_size) == 0) {
+    // 1. Query GCS size (with static caching to avoid redundant slow popen calls)
+    if (is_gcs_size_cached) {
+        gcs_size = cached_gcs_size;
         has_gcs = 1;
+    } else {
+        if (run_subprocess_gcs_size(f->file_name, &gcs_size) == 0) {
+            cached_gcs_size = gcs_size;
+            is_gcs_size_cached = 1;
+            has_gcs = 1;
+        }
     }
 
     uint64_t final_size = has_gcs ? gcs_size : 0;
@@ -242,7 +249,9 @@ static int py_sync_storage_get_file_size(struct thread_data *td, struct fio_file
     }
 
     if (found) {
-        f->real_file_size = final_size;
+        if (f->real_file_size == -1ULL || f->real_file_size == 0 || final_size > f->real_file_size) {
+            f->real_file_size = final_size;
+        }
         fio_file_set_size_known(f);
     }
     return 0;
