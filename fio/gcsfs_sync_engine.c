@@ -258,21 +258,36 @@ static int py_sync_storage_open(struct thread_data *td, struct fio_file *f) {
 
     PyGILState_STATE gstate = PyGILState_Ensure();
 
-    // Invoke open callback passing open context parameters
-    PyObject *cache_type_obj = o->cache_type ? PyUnicode_FromString(o->cache_type) : Py_None;
+    // Invoke open callback passing open context parameters. cache_type_obj is
+    // always a strong reference here: either a fresh PyUnicode or Py_None
+    // with a matching INCREF, so the unconditional Py_DECREF below balances.
+    PyObject *cache_type_obj = NULL;
+    if (o->cache_type) {
+        cache_type_obj = PyUnicode_FromString(o->cache_type);
+    }
     if (!cache_type_obj) {
         cache_type_obj = Py_None;
         Py_INCREF(Py_None);
     }
 
+    PyObject *arg_filename = PyUnicode_FromString(f->file_name);
+    PyObject *arg_is_write = PyBool_FromLong(is_write);
+    PyObject *arg_block_size = PyLong_FromLong(o->block_size);
+    PyObject *arg_use_prefetch = PyBool_FromLong(o->use_prefetch);
+    PyObject *arg_concurrency = PyLong_FromLong(o->concurrency);
     PyObject *args = PyTuple_Pack(6,
-        PyUnicode_FromString(f->file_name),
-        PyBool_FromLong(is_write),
-        PyLong_FromLong(o->block_size),
-        PyBool_FromLong(o->use_prefetch),
-        PyLong_FromLong(o->concurrency),
+        arg_filename,
+        arg_is_write,
+        arg_block_size,
+        arg_use_prefetch,
+        arg_concurrency,
         cache_type_obj
     );
+    Py_XDECREF(arg_filename);
+    Py_XDECREF(arg_is_write);
+    Py_XDECREF(arg_block_size);
+    Py_XDECREF(arg_use_prefetch);
+    Py_XDECREF(arg_concurrency);
     Py_DECREF(cache_type_obj);
 
     PyObject *result = PyObject_CallObject(pFuncOpen, args);
@@ -301,7 +316,9 @@ static int py_sync_storage_close(struct thread_data *td, struct fio_file *f) {
     PyGILState_STATE gstate = PyGILState_Ensure();
 
     long handle = (long)(uintptr_t)f->engine_data;
-    PyObject *args = PyTuple_Pack(1, PyLong_FromLong(handle));
+    PyObject *arg_handle = PyLong_FromLong(handle);
+    PyObject *args = PyTuple_Pack(1, arg_handle);
+    Py_XDECREF(arg_handle);
     PyObject *result = PyObject_CallObject(pFuncClose, args);
     Py_DECREF(args);
 
@@ -335,11 +352,11 @@ static enum fio_q_status py_sync_storage_queue(struct thread_data *td, struct io
         return FIO_Q_COMPLETED;
     }
 
-    PyObject *args = PyTuple_Pack(3,
-        PyLong_FromLong(handle),
-        PyLong_FromLongLong(io_u->offset),
-        memview
-    );
+    PyObject *arg_handle = PyLong_FromLong(handle);
+    PyObject *arg_offset = PyLong_FromLongLong(io_u->offset);
+    PyObject *args = PyTuple_Pack(3, arg_handle, arg_offset, memview);
+    Py_XDECREF(arg_handle);
+    Py_XDECREF(arg_offset);
 
     PyObject *result;
     if (is_write) {

@@ -93,26 +93,29 @@ def _start_background_loop(loop):
     loop.run_forever()
 
 
-def _completion_callback(f: Future, tag: int):
+def _completion_callback(f: Future, ptd_tag: int, tag: int):
     try:
-        f.result()
-        _trampoline_fn(tag, 0)  # Success
+        bytes_done = f.result()
+        _trampoline_fn(ptd_tag, tag, 0, bytes_done)  # Success
     except Exception as e:
         logger.error(f"Async IO failed: {e}")
-        _trampoline_fn(tag, -1)  # Error
+        _trampoline_fn(ptd_tag, tag, -1, 0)  # Error
 
 
 async def _do_async_read(ctx: ReaderContext, offset: int, size: int, buffer_view):
     if hasattr(ctx.f, "_async_fetch_range"):
         data = await ctx.f._async_fetch_range(offset, size)
     else:
+
         def _read():
             ctx.f.seek(offset)
             return ctx.f.read(size)
+
         data = await asyncio.get_running_loop().run_in_executor(None, _read)
 
     # Copy downloaded bytes directly to FIO's C buffer using zero-copy cast and slice assignment
     buffer_view.cast("B")[: len(data)] = data
+    return len(data)
 
 
 async def _do_async_write(ctx: WriterContext, offset: int, data: bytes):
@@ -126,6 +129,7 @@ async def _do_async_write(ctx: WriterContext, offset: int, data: bytes):
         content_type="application/octet-stream",
     )
     ctx.written_bytes += len(data)
+    return len(data)
 
 
 async def _do_init_client():
@@ -168,7 +172,16 @@ def py_init(iodepth, trampoline_ptr):
 
         try:
             _iodepth = iodepth
-            CALLBACK_TYPE = ctypes.CFUNCTYPE(None, ctypes.c_void_p, ctypes.c_int)
+            # Signature: (ptd_ptr, io_u_ptr, err, bytes_done). The ptd_ptr is
+            # per-job and supplied by the C engine on every py_queue call so
+            # the trampoline can route completions to the correct ring.
+            CALLBACK_TYPE = ctypes.CFUNCTYPE(
+                None,
+                ctypes.c_void_p,
+                ctypes.c_void_p,
+                ctypes.c_int,
+                ctypes.c_ulonglong,
+            )
             _trampoline_fn = CALLBACK_TYPE(trampoline_ptr)
 
             import uvloop
@@ -202,9 +215,10 @@ def py_get_file_size(filename):
     try:
         if _fs is None:
             from gcsfs.core import GCSFileSystem
+
             fs = GCSFileSystem(asynchronous=False)
             return fs.info(filename).get("size", -1)
-        
+
         future = asyncio.run_coroutine_threadsafe(_do_get_file_size(filename), _loop)
         return future.result(timeout=10)
     except FileNotFoundError:
@@ -289,7 +303,7 @@ def py_close(handle):
         return -1
 
 
-def py_queue(handle, tag, offset, buffer_view, is_write):
+def py_queue(handle, ptd_tag, tag, offset, buffer_view, is_write):
     ctx = _get_handle(handle)
     if not ctx:
         return -1
@@ -301,7 +315,11 @@ def py_queue(handle, tag, offset, buffer_view, is_write):
             coro = _do_async_read(ctx, offset, size, buffer_view)
 
         future = asyncio.run_coroutine_threadsafe(coro, _loop)
-        future.add_done_callback(lambda f: _completion_callback(f, tag))
+        # Bind ptd_tag and tag at lambda-creation time so each future carries
+        # its own pair (avoids the classic late-binding closure bug).
+        future.add_done_callback(
+            lambda f, p=ptd_tag, t=tag: _completion_callback(f, p, t)
+        )
         return 1
     except Exception as e:
         logger.error(f"Queue failed: {e}")

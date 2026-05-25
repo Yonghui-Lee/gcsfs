@@ -6,6 +6,7 @@
 #include <dlfcn.h>
 #include <stdatomic.h>
 #include <poll.h>
+#include <sched.h>
 #include <unistd.h>
 #include <sys/eventfd.h>
 
@@ -28,6 +29,7 @@ static PyObject *pFuncGetSize = NULL;
 struct reaped_event {
     struct io_u *io_u;
     int error;
+    unsigned long long bytes_done;
 };
 
 struct py_spsc_ring {
@@ -53,10 +55,9 @@ struct gcsfs_io_u_data {
     unsigned long long cached_len;
 };
 
-static struct py_thread_data *global_ptd = NULL;
 static PyThreadState *main_tstate = NULL;
 
-static inline int ring_push(struct py_spsc_ring *ring, struct io_u *io_u, int error) {
+static inline int ring_push(struct py_spsc_ring *ring, struct io_u *io_u, int error, unsigned long long bytes_done) {
     unsigned int t = atomic_load_explicit(&ring->tail, memory_order_relaxed);
     unsigned int h = atomic_load_explicit(&ring->head, memory_order_acquire);
 
@@ -67,6 +68,7 @@ static inline int ring_push(struct py_spsc_ring *ring, struct io_u *io_u, int er
     unsigned int idx = t & (RING_BUFFER_SIZE - 1);
     ring->events[idx].io_u = io_u;
     ring->events[idx].error = error;
+    ring->events[idx].bytes_done = bytes_done;
 
     atomic_store_explicit(&ring->tail, t + 1, memory_order_release);
     return 0;
@@ -87,23 +89,39 @@ static inline int ring_pop(struct py_spsc_ring *ring, struct reaped_event *out_e
     return 0;
 }
 
-void c_complete_trampoline(void *io_u_ptr, int err) {
+/*
+ * Completion trampoline. Called from the Python adapter's done_callback, which
+ * runs on the asyncio loop thread with the GIL held (ctypes CFUNCTYPE acquires
+ * GIL on entry). `ptd_ptr` is the per-job py_thread_data, plumbed through the
+ * queue path so each fio job's completions land in its own ring; there is no
+ * shared global state, so the engine is safe under numjobs>1 in either process
+ * or thread mode.
+ */
+void c_complete_trampoline(void *ptd_ptr, void *io_u_ptr, int err, unsigned long long bytes_done) {
+    struct py_thread_data *ptd = (struct py_thread_data *)ptd_ptr;
     struct io_u *io_u = (struct io_u *)io_u_ptr;
 
-    if (!global_ptd) {
-        fprintf(stderr, "c_complete_trampoline called before global_ptd was set!\n");
+    if (!ptd) {
+        fprintf(stderr, "c_complete_trampoline called with NULL ptd!\n");
         return;
     }
 
-    if (ring_push(&global_ptd->ring, io_u, err) < 0) {
-        fprintf(stderr, "SPSC Ring Buffer overflow in c_complete_trampoline!\n");
-        return;
+    /*
+     * Release the GIL across the spin and the eventfd write so the consumer
+     * (py_storage_getevents, which runs GIL-free in a fio worker) is never
+     * starved by a producer holding the GIL. Today getevents does not need
+     * the GIL, but releasing here keeps the engine deadlock-free if that
+     * ever changes, and lets other Python threads run while we wait.
+     */
+    Py_BEGIN_ALLOW_THREADS
+    while (ring_push(&ptd->ring, io_u, err, bytes_done) < 0) {
+        sched_yield();
     }
-
     eventfd_t val = 1;
-    if (eventfd_write(global_ptd->event_fd, val) < 0) {
+    if (eventfd_write(ptd->event_fd, val) < 0) {
         perror("eventfd_write failed in trampoline");
     }
+    Py_END_ALLOW_THREADS
 }
 
 /*
@@ -146,9 +164,6 @@ static void py_storage_cleanup(struct thread_data *td) {
     if (ptd) {
         if (ptd->event_fd >= 0) {
             close(ptd->event_fd);
-        }
-        if (global_ptd == ptd) {
-            global_ptd = NULL;
         }
         free(ptd);
         td->io_ops_data = NULL;
@@ -232,6 +247,27 @@ static int py_init_interpreter_internal(void) {
 static pthread_mutex_t init_mutex = PTHREAD_MUTEX_INITIALIZER;
 static int py_is_runtime_initialized = 0;
 
+static int py_thread_data_init(struct thread_data *td) {
+    if (td->io_ops_data) {
+        return 0;
+    }
+
+    struct py_thread_data *ptd = calloc(1, sizeof(struct py_thread_data));
+    if (!ptd) {
+        return 1;
+    }
+
+    ptd->event_fd = eventfd(0, EFD_CLOEXEC | EFD_NONBLOCK);
+    if (ptd->event_fd < 0) {
+        perror("Failed to create eventfd");
+        free(ptd);
+        return 1;
+    }
+
+    td->io_ops_data = ptd;
+    return 0;
+}
+
 static int py_init_runtime_deferred(struct thread_data *td) {
     pthread_mutex_lock(&init_mutex);
 
@@ -245,28 +281,14 @@ static int py_init_runtime_deferred(struct thread_data *td) {
         return 1;
     }
 
-    // Setup thread-local data
-    struct py_thread_data *ptd = calloc(1, sizeof(struct py_thread_data));
-    td->io_ops_data = ptd;
-
-    ptd->event_fd = eventfd(0, EFD_CLOEXEC | EFD_NONBLOCK);
-    if (ptd->event_fd < 0) {
-        perror("Failed to create eventfd");
-        free(ptd);
-        td->io_ops_data = NULL;
-        pthread_mutex_unlock(&init_mutex);
-        return 1;
-    }
-
-    global_ptd = ptd;
-
     // Initialize the Python-side logic (Global Loop & Client)
     PyGILState_STATE gstate = PyGILState_Ensure();
 
-    PyObject *args = PyTuple_Pack(2,
-        PyLong_FromLong(td->o.iodepth),
-        PyLong_FromVoidPtr((void *)c_complete_trampoline)
-    );
+    PyObject *arg_iodepth = PyLong_FromLong(td->o.iodepth);
+    PyObject *arg_trampoline = PyLong_FromVoidPtr((void *)c_complete_trampoline);
+    PyObject *args = PyTuple_Pack(2, arg_iodepth, arg_trampoline);
+    Py_XDECREF(arg_iodepth);
+    Py_XDECREF(arg_trampoline);
     PyObject *result = PyObject_CallObject(pFuncInit, args);
     Py_DECREF(args);
 
@@ -283,10 +305,6 @@ static int py_init_runtime_deferred(struct thread_data *td) {
     PyGILState_Release(gstate);
 
     if (success != 0) {
-        close(ptd->event_fd);
-        free(ptd);
-        td->io_ops_data = NULL;
-        global_ptd = NULL;
         pthread_mutex_unlock(&init_mutex);
         return 1;
     }
@@ -335,18 +353,23 @@ static int py_storage_get_file_size(struct thread_data *td, struct fio_file *f) 
 static int py_storage_open(struct thread_data *td, struct fio_file *f) {
     if (py_init_runtime_deferred(td))
         return 1;
+    if (py_thread_data_init(td))
+        return 1;
 
     PyGILState_STATE gstate = PyGILState_Ensure();
 
     struct py_options *o = td->eo;
     int is_write = (td->o.td_ddir == TD_DDIR_WRITE);
 
-    PyObject *args = PyTuple_Pack(4,
-        PyUnicode_FromString(f->file_name),
-        PyBool_FromLong(is_write),
-        PyBool_FromLong(o->flush_every_write),
-        PyLong_FromLongLong((long long)f->real_file_size)
-    );
+    PyObject *arg_filename = PyUnicode_FromString(f->file_name);
+    PyObject *arg_is_write = PyBool_FromLong(is_write);
+    PyObject *arg_flush = PyBool_FromLong(o->flush_every_write);
+    PyObject *arg_size = PyLong_FromLongLong((long long)f->real_file_size);
+    PyObject *args = PyTuple_Pack(4, arg_filename, arg_is_write, arg_flush, arg_size);
+    Py_XDECREF(arg_filename);
+    Py_XDECREF(arg_is_write);
+    Py_XDECREF(arg_flush);
+    Py_XDECREF(arg_size);
 
     PyObject *result = PyObject_CallObject(pFuncOpen, args);
     Py_DECREF(args);
@@ -371,7 +394,9 @@ static int py_storage_close(struct thread_data *td, struct fio_file *f) {
     PyGILState_STATE gstate = PyGILState_Ensure();
 
     long handle = (long)(uintptr_t)f->engine_data;
-    PyObject *args = PyTuple_Pack(1, PyLong_FromLong(handle));
+    PyObject *arg_handle = PyLong_FromLong(handle);
+    PyObject *args = PyTuple_Pack(1, arg_handle);
+    Py_XDECREF(arg_handle);
     PyObject *result = PyObject_CallObject(pFuncClose, args);
     Py_DECREF(args);
 
@@ -403,6 +428,12 @@ static void py_gcsfs_io_u_free(struct thread_data *td, struct io_u *io_u) {
 }
 
 static enum fio_q_status py_storage_queue(struct thread_data *td, struct io_u *io_u) {
+    struct py_thread_data *ptd = td->io_ops_data;
+    if (!ptd) {
+        io_u->error = EIO;
+        return FIO_Q_COMPLETED;
+    }
+
     PyGILState_STATE gstate = PyGILState_Ensure();
 
     long handle = (long)(uintptr_t)io_u->file->engine_data;
@@ -429,14 +460,27 @@ static enum fio_q_status py_storage_queue(struct thread_data *td, struct io_u *i
         iud->cached_len = io_u->xfer_buflen;
     }
 
-    // We pass the io_u pointer address as the 'tag' so we can identify it later
-    PyObject *args = PyTuple_Pack(5,
-        PyLong_FromLong(handle),
-        PyLong_FromVoidPtr(io_u),
-        PyLong_FromLongLong(io_u->offset),
+    // Pass the io_u pointer as the per-IO 'tag' and the per-job ptd pointer so
+    // the completion trampoline knows which ring to push into. Both are opaque
+    // PyLong-wrapped pointers from Python's perspective.
+    PyObject *arg_handle = PyLong_FromLong(handle);
+    PyObject *arg_ptd = PyLong_FromVoidPtr(ptd);
+    PyObject *arg_tag = PyLong_FromVoidPtr(io_u);
+    PyObject *arg_offset = PyLong_FromLongLong(io_u->offset);
+    PyObject *arg_is_write = PyBool_FromLong(is_write);
+    PyObject *args = PyTuple_Pack(6,
+        arg_handle,
+        arg_ptd,
+        arg_tag,
+        arg_offset,
         (PyObject *)iud->memview,
-        PyBool_FromLong(is_write)
+        arg_is_write
     );
+    Py_XDECREF(arg_handle);
+    Py_XDECREF(arg_ptd);
+    Py_XDECREF(arg_tag);
+    Py_XDECREF(arg_offset);
+    Py_XDECREF(arg_is_write);
 
     PyObject *result = PyObject_CallObject(pFuncQueue, args);
     Py_DECREF(args);
@@ -533,10 +577,16 @@ static struct io_u *py_storage_event(struct thread_data *td, int event) {
 
     struct io_u *io_u = ptd->events[event].io_u;
     int err = ptd->events[event].error;
+    unsigned long long bytes_done = ptd->events[event].bytes_done;
 
     if (err != 0) {
         io_u->error = EIO;
     } else {
+        if (bytes_done <= io_u->xfer_buflen) {
+            io_u->resid = io_u->xfer_buflen - bytes_done;
+        } else {
+            io_u->resid = 0;
+        }
         io_u->error = 0;
     }
 
