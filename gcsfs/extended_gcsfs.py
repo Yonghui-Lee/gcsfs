@@ -162,10 +162,17 @@ class ExtendedGcsFileSystem(GCSFileSystem):
                 # client_options expects only the host:port, without the protocol.
                 endpoint = self._location.split("://")[-1]
                 client_options.api_endpoint = endpoint
+            
+            # Check for direct path toggle
+            disable_env = os.environ.get("GOOGLE_CLOUD_DISABLE_DIRECT_PATH", "").strip().lower()
+            disable_direct_path = disable_env in ("true", "1", "yes", "on")
+            attempt_direct_path = not disable_direct_path
+            
             self._grpc_client = AsyncGrpcClient(
                 credentials=self.credential,
                 client_info=ClientInfo(user_agent=f"{USER_AGENT}/{version}"),
                 client_options=client_options,
+                attempt_direct_path=attempt_direct_path,
             )
         return self._grpc_client
 
