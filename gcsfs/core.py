@@ -38,7 +38,21 @@ logger = logging.getLogger("gcsfs")
 
 
 if "GCSFS_DEBUG" in os.environ:
-    setup_logging(logger=logger, level=os.getenv("GCSFS_DEBUG"))
+    level = os.getenv("GCSFS_DEBUG")
+    logfile = os.getenv("GCSFS_LOG_FILE")
+    if logfile:
+        # Clear existing handlers to prevent duplicate entries
+        for h in list(logger.handlers):
+            logger.removeHandler(h)
+        handler = logging.FileHandler(logfile)
+        formatter = logging.Formatter(
+            "%(asctime)s [%(levelname)s] %(name)s: %(message)s"
+        )
+        handler.setFormatter(formatter)
+        logger.addHandler(handler)
+        logger.setLevel(level)
+    else:
+        setup_logging(logger=logger, level=level)
 
 
 # client created 2018-01-16

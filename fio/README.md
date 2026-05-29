@@ -269,3 +269,36 @@ If you prefer not to use the automated `./run.sh` script, you can configure your
    ```bash
    fio jobs/smoke_test_read.fio
    ```
+
+---
+
+## 9. Advanced Environment Toggles
+
+When profiling, benchmarking, or troubleshooting workloads with the dynamic FIO I/O engines, you can tap into the following environment variables to diagnose performance profiles or control networking paths:
+
+### A. DirectPath Control (`GOOGLE_CLOUD_DISABLE_DIRECT_PATH`)
+By default, the asynchronous gRPC client in GCSFS attempts to use Google Cloud **DirectPath** (direct network pipeline connectivity bypassing frontend proxies) to achieve maximum line-rate throughput when executing benchmarks from within supported Google Cloud environments (like GKE or GCE VMs).
+
+If you encounter networking restrictions, DNS resolution bugs (e.g., DNS amplification overhead), or wish to explicitly route traffic through standard Google Frontend (GFE) proxies to measure proxy latency differences, you can disable DirectPath:
+
+```bash
+# Disable DirectPath connectivity (forces standard proxy endpoints)
+export GOOGLE_CLOUD_DISABLE_DIRECT_PATH=true
+```
+
+*   **Syntax & Robustness:** The toggle is highly robust and accepts standard truthy values case-insensitively, including `"true"`, `"1"`, `"yes"`, and `"on"`. Strips any leading/trailing whitespace automatically.
+
+### B. Library Diagnostics & Log redirection (`GCSFS_DEBUG` / `GCSFS_LOG_FILE`)
+To capture internal diagnostics, raw connection state events, HNS layout cache hits/misses, or retry events without muddying standard FIO outputs (which can break machine-readable FIO json parsing engines):
+
+1.  **Enable Debug Level Streams:**
+    ```bash
+    export GCSFS_DEBUG=DEBUG  # Supports: DEBUG, INFO, WARNING, ERROR
+    ```
+2.  **Redirect to a Logfile:** To prevent raw log entries from polluting FIO's standard terminal stdout output, redirect all GCSFS logging events directly to a file:
+    ```bash
+    export GCSFS_DEBUG=DEBUG
+    export GCSFS_LOG_FILE=gcsfs_fio_run.log
+    ```
+
+*   **Format:** Logging to a file uses a standardized structured design: `YYYY-MM-DD HH:MM:SS [LEVEL] logger_name: message` (e.g., `2026-05-29 05:15:30 [DEBUG] gcsfs: GET: b/my-zonal-hns-bucket/o/...`).
