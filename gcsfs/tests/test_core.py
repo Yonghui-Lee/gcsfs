@@ -162,7 +162,7 @@ def test_infocache(gcs):
     with gcs.open(f"{TEST_BUCKET}/test_info_cache", "w") as f:
         f.write("data")
     assert f"{TEST_BUCKET}/test_info_cache" not in gcs.infocache
-    
+
     info = gcs.info(f"{TEST_BUCKET}/test_info_cache")
     assert f"{TEST_BUCKET}/test_info_cache" in gcs.infocache
     assert gcs.infocache[f"{TEST_BUCKET}/test_info_cache"]["size"] == info["size"]

@@ -23,11 +23,10 @@ import fsspec
 from fsspec import asyn
 from fsspec.callbacks import NoOpCallback
 from fsspec.implementations.http import get_client
-
-from .caching import InfoCache
 from fsspec.utils import setup_logging, stringify_path
 
 from . import __version__ as version
+from .caching import InfoCache
 from .checkers import get_consistency_checker
 from .concurrency import parallel_tasks_first_completed
 from .credentials import GoogleCredentials
@@ -931,7 +930,8 @@ class GCSFileSystem(asyn.AsyncFileSystem):
             path = self._strip_protocol(path).rstrip("/")
 
             keys_to_delete = [
-                k for k in self.infocache 
+                k
+                for k in self.infocache
                 if k == path or k.startswith(f"{path}#") or k.startswith(f"{path}/")
             ]
             for k in keys_to_delete:
@@ -1070,7 +1070,7 @@ class GCSFileSystem(asyn.AsyncFileSystem):
         path = self._strip_protocol(path).rstrip("/")
         bucket, key, path_generation = self.split_path(path)
         resolved_generation = _coalesce_generation(generation, path_generation)
-        
+
         if resolved_generation:
             return f"{path}#{resolved_generation}"
         return path
@@ -1078,9 +1078,13 @@ class GCSFileSystem(asyn.AsyncFileSystem):
     def invalidate_info(self, path, generation=None):
         path = self._strip_protocol(path).rstrip("/")
         if generation is not None:
-            self.infocache.pop(self._get_info_cache_key(path, generation=generation), None)
+            self.infocache.pop(
+                self._get_info_cache_key(path, generation=generation), None
+            )
         else:
-            keys_to_delete = [k for k in self.infocache if k == path or k.startswith(f"{path}#")]
+            keys_to_delete = [
+                k for k in self.infocache if k == path or k.startswith(f"{path}#")
+            ]
             for k in keys_to_delete:
                 self.infocache.pop(k, None)
 

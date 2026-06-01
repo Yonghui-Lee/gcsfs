@@ -127,10 +127,11 @@ register_cache(ReadAheadChunked, clobber=True)
 class InfoCache(MutableMapping):
     """
     Caching of single-object metadata (e.g., from info() calls).
-    
+
     Structure:
         {"key": {"name": "path", "size": 123, "type": "file", ...}, ...}
     """
+
     def __init__(
         self,
         use_info_cache=True,
@@ -142,30 +143,32 @@ class InfoCache(MutableMapping):
         self.use_info_cache = use_info_cache
         self.info_expiry_time = info_expiry_time
         self.max_paths = max_paths
-        
+
         if self.max_paths:
-            self._q = lru_cache(self.max_paths + 1)(lambda key: self._cache.pop(key, None))
+            self._q = lru_cache(self.max_paths + 1)(
+                lambda key: self._cache.pop(key, None)
+            )
 
     def __getitem__(self, item):
         if self.info_expiry_time is not None:
             if self._times.get(item, 0) - time.time() < -self.info_expiry_time:
                 del self._cache[item]
                 raise KeyError(item)
-                
+
         if self.max_paths:
             self._q(item)
-            
+
         return self._cache[item]
 
     def __setitem__(self, key, value):
         if not self.use_info_cache:
             return
-            
+
         if self.max_paths:
-            self._q(key) 
-            
+            self._q(key)
+
         self._cache[key] = value
-        
+
         if self.info_expiry_time is not None:
             self._times[key] = time.time()
 

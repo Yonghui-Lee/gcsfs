@@ -40,7 +40,9 @@ class LoggingGCSFile(GCSFile):
     def read(self, length=-1):
         pid = os.getpid()
         tid = threading.get_ident()
-        logger.info(f"[ADDITIONAL LOG] read: {self.path}, pid={pid}, tid={tid}")
+        logger.info(
+            f"[ADDITIONAL LOG] read: {self.path}, block_size={self.blocksize}, pid={pid}, tid={tid}"
+        )
         return super().read(length)
 
 
@@ -48,7 +50,9 @@ class LoggingZonalFile(ZonalFile):
     def read(self, length=-1):
         pid = os.getpid()
         tid = threading.get_ident()
-        logger.info(f"[ADDITIONAL LOG] read: {self.path}, pid={pid}, tid={tid}")
+        logger.info(
+            f"[ADDITIONAL LOG] read: {self.path}, block_size={self.blocksize}, pid={pid}, tid={tid}"
+        )
         return super().read(length)
 
 
@@ -102,10 +106,16 @@ class ExtendedGcsFileSystem(GCSFileSystem):
         cache_key = self._get_info_cache_key(path_stripped, generation=generation)
         hit_cache = cache_key in self.infocache
         if hit_cache:
-            logger.info(f"[ADDITIONAL LOG] info hit infocache: {path_stripped}, pid={pid}, tid={tid}")
+            logger.info(
+                f"[ADDITIONAL LOG] info hit infocache: {path_stripped}, pid={pid}, tid={tid}"
+            )
         else:
-            logger.info(f"[ADDITIONAL LOG] info miss infocache: {path_stripped}, pid={pid}, tid={tid}")
-        logger.info(f"[ADDITIONAL LOG] infocache keys: {list(self.infocache._cache.keys())}")
+            logger.info(
+                f"[ADDITIONAL LOG] info miss infocache: {path_stripped}, pid={pid}, tid={tid}"
+            )
+        logger.info(
+            f"[ADDITIONAL LOG] infocache keys: {list(self.infocache._cache.keys())}"
+        )
         try:
             return super().info(path, **kwargs)
         finally:
@@ -118,15 +128,21 @@ class ExtendedGcsFileSystem(GCSFileSystem):
         pid = os.getpid()
         tid = threading.get_ident()
         logger.info(f"[ADDITIONAL LOG] _info start: {path}, pid={pid}, tid={tid}")
-        
+
         path_stripped = self._strip_protocol(path).rstrip("/")
         cache_key = self._get_info_cache_key(path_stripped, generation=generation)
         hit_cache = cache_key in self.infocache
         if hit_cache:
-            logger.info(f"[ADDITIONAL LOG] _info hit infocache: {path_stripped}, pid={pid}, tid={tid}")
+            logger.info(
+                f"[ADDITIONAL LOG] _info hit infocache: {path_stripped}, pid={pid}, tid={tid}"
+            )
         else:
-            logger.info(f"[ADDITIONAL LOG] _info miss infocache: {path_stripped}, pid={pid}, tid={tid}")
-        logger.info(f"[ADDITIONAL LOG] infocache keys: {list(self.infocache._cache.keys())}")
+            logger.info(
+                f"[ADDITIONAL LOG] _info miss infocache: {path_stripped}, pid={pid}, tid={tid}"
+            )
+        logger.info(
+            f"[ADDITIONAL LOG] infocache keys: {list(self.infocache._cache.keys())}"
+        )
         try:
             return await super()._info(path, generation=generation, **kwargs)
         finally:
@@ -234,7 +250,9 @@ class ExtendedGcsFileSystem(GCSFileSystem):
         """
         pid = os.getpid()
         tid = threading.get_ident()
-        logger.info(f"[ADDITIONAL LOG] open: {path}, pid={pid}, tid={tid}")
+        logger.info(
+            f"[ADDITIONAL LOG] open: {path}, block_size={block_size or self.default_block_size}, pid={pid}, tid={tid}"
+        )
         bucket, _, _ = self.split_path(path)
         bucket_type = self._sync_lookup_bucket_type(bucket)
 
@@ -461,15 +479,19 @@ class ExtendedGcsFileSystem(GCSFileSystem):
                 self.dircache.pop(key, None)
 
         keys_to_delete = [
-            k for k in self.infocache
+            k
+            for k in self.infocache
             if k == path1 or k.startswith(f"{path1}#") or k.startswith(source_prefix)
         ]
         for k in keys_to_delete:
             self.infocache.pop(k, None)
 
         keys_to_delete_dest = [
-            k for k in self.infocache
-            if k == path2 or k.startswith(f"{path2}#") or k.startswith(f"{path2.rstrip('/')}/")
+            k
+            for k in self.infocache
+            if k == path2
+            or k.startswith(f"{path2}#")
+            or k.startswith(f"{path2.rstrip('/')}/")
         ]
         for k in keys_to_delete_dest:
             self.infocache.pop(k, None)
@@ -743,7 +765,7 @@ class ExtendedGcsFileSystem(GCSFileSystem):
             logger.debug(f"create_folder request: {request}")
             client = await self._get_control_plane_client()
             await client.create_folder(request=request)
-            
+
             self.invalidate_info(path)
 
             # Instead of invalidating the parent cache, update it to add the new entry.
