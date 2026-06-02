@@ -36,6 +36,160 @@ from .zb_hns_utils import DEFAULT_CONCURRENCY, MAX_PREFETCH_SIZE
 
 logger = logging.getLogger("gcsfs")
 
+import hashlib
+import threading
+
+try:
+    import fcntl
+except ImportError:
+    fcntl = None
+
+_in_process_reads = {}
+_in_process_lock = threading.Lock()
+
+async def coalesced_read(namespace, path, start, end, fetch_coro, use_multiprocess=True):
+    """
+    A unified wrapper that coalesces concurrent/sequential read requests
+    for the same file path and byte range.
+    
+    Supports:
+    - Thread/Asyncio single-flighting (In-process coalescing)
+    - Multi-process memory-backed chunk cache and locking (Inter-process coalescing)
+    """
+    if start is None:
+        start = 0
+    if end is None:
+        return await fetch_coro()
+
+    # Normalize/check start and end
+    if start >= end:
+        return b""
+
+    # Determine if we should use coalescing
+    coalesce_env = os.environ.get("GCSFS_COALESCE_READS", "true").lower() in ("true", "1")
+    if not coalesce_env:
+        return await fetch_coro()
+
+    # Create a unique key for this range request
+    key = (namespace, path, start, end)
+
+    # 1. In-process (Asyncio/Thread) Single-Flighting
+    # Since multiple coroutines running on the same event loop might call this,
+    # we can use a shared asyncio Future to coalesce them.
+    loop = asyncio.get_running_loop()
+    
+    is_creator = False
+    with _in_process_lock:
+        if key in _in_process_reads:
+            fut = _in_process_reads[key]
+            # If the future is for a different loop, don't share it
+            if fut._loop == loop:
+                logger.debug(f"Coalescing in-flight read for {path} range [{start}, {end})")
+            else:
+                fut = loop.create_future()
+                _in_process_reads[key] = fut
+                is_creator = True
+        else:
+            fut = loop.create_future()
+            _in_process_reads[key] = fut
+            is_creator = True
+
+    if not is_creator:
+        return await fut
+
+    async def _do_read():
+        # If fcntl is not available, we can't do multi-process locking safely,
+        # so we fallback to direct fetch
+        if not use_multiprocess or fcntl is None:
+            return await fetch_coro()
+
+        # Multi-process memory-backed cache under /dev/shm or /tmp
+        if os.path.exists("/dev/shm") and os.access("/dev/shm", os.W_OK):
+            cache_dir = "/dev/shm/gcsfs_shared_cache"
+        else:
+            cache_dir = "/tmp/gcsfs_shared_cache"
+
+        try:
+            os.makedirs(cache_dir, exist_ok=True)
+        except Exception:
+            # Fallback if we can't create directory
+            return await fetch_coro()
+
+        path_hash = hashlib.sha256(path.encode()).hexdigest()
+        cache_file = os.path.join(cache_dir, f"{path_hash}_{start}_{end}")
+        lock_file = cache_file + ".lock"
+
+        try:
+            lock_fd = os.open(lock_file, os.O_CREAT | os.O_WRONLY, 0o666)
+        except Exception:
+            # Fallback if lock file cannot be created/opened
+            return await fetch_coro()
+
+        try:
+            # Acquire exclusive lock in a non-blocking async-friendly loop
+            while True:
+                try:
+                    fcntl.flock(lock_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                    break
+                except (BlockingIOError, PermissionError):
+                    await asyncio.sleep(0.01)
+                except OSError as e:
+                    import errno
+                    if e.errno in (errno.EAGAIN, errno.EWOULDBLOCK):
+                        await asyncio.sleep(0.01)
+                    else:
+                        raise
+
+            # Check if cache file exists
+            if os.path.exists(cache_file):
+                try:
+                    with open(cache_file, "rb") as f:
+                        data = f.read()
+                    logger.debug(f"Multi-process cache hit for {path} range [{start}, {end})")
+                    return data
+                except Exception:
+                    pass  # Fall back to download on read error
+
+            # Cache miss: fetch the data
+            data = await fetch_coro()
+
+            # Write data to cache file atomically
+            try:
+                temp_cache_file = cache_file + ".tmp"
+                with open(temp_cache_file, "wb") as f:
+                    f.write(data)
+                os.rename(temp_cache_file, cache_file)
+            except Exception:
+                pass  # Ignore cache write errors
+
+            return data
+
+        finally:
+            try:
+                fcntl.flock(lock_fd, fcntl.LOCK_UN)
+            except Exception:
+                pass
+            try:
+                os.close(lock_fd)
+            except Exception:
+                pass
+
+    try:
+        result = await _do_read()
+        with _in_process_lock:
+            if _in_process_reads.get(key) is fut:
+                fut.set_result(result)
+        return result
+    except Exception as e:
+        with _in_process_lock:
+            if _in_process_reads.get(key) is fut:
+                fut.set_exception(e)
+        raise
+    finally:
+        with _in_process_lock:
+            if _in_process_reads.get(key) is fut:
+                _in_process_reads.pop(key, None)
+
 
 if "GCSFS_DEBUG" in os.environ:
     level = os.getenv("GCSFS_DEBUG")
@@ -1199,14 +1353,25 @@ class GCSFileSystem(asyn.AsyncFileSystem):
         if start is not None and end is not None and start >= end >= 0:
             return b""
 
-        u2 = self.url(path)
-        if start is not None or end is not None:
-            head = {"Range": await self._process_limits(path, start, end)}
-        else:
-            head = {}
+        if start is None:
+            start = 0
+        if end is None:
+            try:
+                end = (await self._info(path))["size"]
+            except Exception:
+                pass
 
-        headers, out = await self._call("GET", u2, headers=head)
-        return out
+        async def _fetch():
+            u2 = self.url(path)
+            if start is not None or end is not None:
+                head = {"Range": await self._process_limits(path, start, end)}
+            else:
+                head = {}
+
+            headers, out = await self._call("GET", u2, headers=head)
+            return out
+
+        return await coalesced_read("sequential", path, start, end, _fetch)
 
     async def _cat_file_concurrent(
         self, path, start=None, end=None, concurrency=DEFAULT_CONCURRENCY, **kwargs
@@ -1222,32 +1387,35 @@ class GCSFileSystem(asyn.AsyncFileSystem):
         if concurrency <= 1 or end - start < self.MIN_CHUNK_SIZE_FOR_CONCURRENCY:
             return await self._cat_file_sequential(path, start=start, end=end, **kwargs)
 
-        total_size = end - start
-        part_size = total_size // concurrency
-        tasks = []
+        async def _fetch():
+            total_size = end - start
+            part_size = total_size // concurrency
+            tasks = []
 
-        for i in range(concurrency):
-            offset = start + (i * part_size)
-            actual_size = (
-                part_size if i < concurrency - 1 else total_size - (i * part_size)
-            )
-            tasks.append(
-                asyncio.create_task(
-                    self._cat_file_sequential(
-                        path, start=offset, end=offset + actual_size, **kwargs
+            for i in range(concurrency):
+                offset = start + (i * part_size)
+                actual_size = (
+                    part_size if i < concurrency - 1 else total_size - (i * part_size)
+                )
+                tasks.append(
+                    asyncio.create_task(
+                        self._cat_file_sequential(
+                            path, start=offset, end=offset + actual_size, **kwargs
+                        )
                     )
                 )
-            )
 
-        try:
-            results = await asyncio.gather(*tasks)
-            return b"".join(results)
-        except BaseException as e:
-            for t in tasks:
-                if not t.done():
-                    t.cancel()
-            await asyncio.gather(*tasks, return_exceptions=True)
-            raise e
+            try:
+                results = await asyncio.gather(*tasks)
+                return b"".join(results)
+            except BaseException as e:
+                for t in tasks:
+                    if not t.done():
+                        t.cancel()
+                await asyncio.gather(*tasks, return_exceptions=True)
+                raise e
+
+        return await coalesced_read("concurrent", path, start, end, _fetch)
 
     async def _cat_file(
         self, path, start=None, end=None, concurrency=DEFAULT_CONCURRENCY, **kwargs

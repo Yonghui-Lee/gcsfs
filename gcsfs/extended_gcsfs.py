@@ -25,7 +25,7 @@ from google.cloud.storage.asyncio.async_multi_range_downloader import (
 
 from gcsfs import __version__ as version
 from gcsfs import zb_hns_utils
-from gcsfs.core import GCSFile, GCSFileSystem
+from gcsfs.core import GCSFile, GCSFileSystem, coalesced_read
 from gcsfs.retry import DEFAULT_RETRY_CONFIG, get_storage_control_retry_config
 from gcsfs.zb_hns_utils import (
     DirectMemmoveBuffer,
@@ -419,7 +419,24 @@ class ExtendedGcsFileSystem(GCSFileSystem):
             if pool_created_here:
                 await mrd.close()
 
-    async def _concurrent_mrd_fetch(self, offset, length, concurrency, mrd_or_pool):
+    async def _concurrent_mrd_fetch(self, offset, length, concurrency, mrd_or_pool, path=None):
+        """Helper to handle concurrent chunk downloads into a DirectMemmoveBuffer."""
+        if path is None:
+            if hasattr(mrd_or_pool, "bucket_name") and hasattr(mrd_or_pool, "object_name"):
+                path = f"{mrd_or_pool.bucket_name}/{mrd_or_pool.object_name}"
+
+        if path is None:
+            return await self._do_concurrent_mrd_fetch(offset, length, concurrency, mrd_or_pool)
+
+        start = offset
+        end = offset + length
+
+        async def _fetch():
+            return await self._do_concurrent_mrd_fetch(offset, length, concurrency, mrd_or_pool)
+
+        return await coalesced_read("mrd_fetch", path, start, end, _fetch)
+
+    async def _do_concurrent_mrd_fetch(self, offset, length, concurrency, mrd_or_pool):
         """Helper to handle concurrent chunk downloads into a DirectMemmoveBuffer."""
         concurrency = (
             concurrency if length >= self.MIN_CHUNK_SIZE_FOR_CONCURRENCY else 1
@@ -548,6 +565,7 @@ class ExtendedGcsFileSystem(GCSFileSystem):
                 length,
                 concurrency if length >= self.MIN_CHUNK_SIZE_FOR_CONCURRENCY else 1,
                 mrd,
+                path=path,
             )
 
         finally:
