@@ -8,7 +8,7 @@ import sys
 from datetime import datetime
 
 import numpy as np
-from prettytable import PrettyTable
+from prettytable import PrettyTable, TableStyle
 
 from gcsfs.tests.perf.microbenchmarks.conftest import MB
 
@@ -261,6 +261,8 @@ def _create_table_row(row):
         _format_mb(row.get("file_size", 0)),
         _format_mb(row.get("chunk_size", 0)),
         _format_mb(row.get("block_size", 0)),
+        row.get("mrd_pool_cache_size", "N/A"),
+        row.get("mrd_pool_size", "N/A"),
         latency,
         _format_mb(throughput_val),
         f"{float(row.get('cpu_max_global', 0)):.2f}",
@@ -298,12 +300,15 @@ def _print_csv_to_shell(report_path):
             "File Size (MiB)",
             "Chunk Size (MiB)",
             "Block Size (MiB)",
+            "MRD Pool Cache Size",
+            "MRD Pool Size",
             "Mean Latency (s)",
             "Mean Throughput (MiB/s)",
             "Max CPU (%)",
             "Max Memory (MiB)",
         ]
         table = PrettyTable()
+        table.set_style(TableStyle.MARKDOWN)
         table.field_names = display_headers
 
         for row in rows:

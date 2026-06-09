@@ -1,5 +1,6 @@
 """Tests for ZonalFile write operations."""
 
+import asyncio
 import os
 from unittest import mock
 
@@ -8,21 +9,29 @@ from google.cloud.storage.asyncio.async_appendable_object_writer import (
     _DEFAULT_FLUSH_INTERVAL_BYTES,
 )
 
+from gcsfs.tests.conftest import requires_rapid
 from gcsfs.tests.settings import TEST_ZONAL_BUCKET
-from gcsfs.tests.utils import tempdir, tmpfile
+from gcsfs.tests.utils import is_real_gcs, tempdir, tmpfile
+from gcsfs.zonal_file import ZonalFile
 
 test_data = b"hello world"
 
-REQUIRED_ENV_VAR = "GCSFS_EXPERIMENTAL_ZB_HNS_SUPPORT"
+pytestmark = [requires_rapid]
 
-# If the condition is True, only then tests in this file are run.
-should_run = os.getenv(REQUIRED_ENV_VAR, "false").lower() in (
-    "true",
-    "1",
-)
-pytestmark = pytest.mark.skipif(
-    not should_run, reason=f"Skipping tests: {REQUIRED_ENV_VAR} env variable is not set"
-)
+
+@pytest.fixture
+def mock_gcsfs():
+    fs = mock.Mock()
+    fs._split_path.return_value = ("test-bucket", "test-key", "123")
+    fs.split_path.return_value = ("test-bucket", "test-key", "123")
+    fs.info.return_value = {"size": 1000, "generation": "123", "name": "test-key"}
+    fs.loop = mock.Mock()
+    # Stub the MRDPoolCache so ZonalFile.__init__ doesn't try real RPCs.
+    mock_pool = mock.Mock()
+    mock_pool.persisted_size = 1000
+    fs._mrd_pool_cache = mock.Mock()
+    fs._mrd_pool_cache.get = mock.AsyncMock(return_value=mock_pool)
+    return fs
 
 
 @pytest.mark.parametrize(
@@ -343,7 +352,7 @@ def test_zonal_file_append_to_empty(extended_gcsfs, zonal_write_mocks, file_path
 
 
 @pytest.mark.skipif(
-    os.environ.get("STORAGE_EMULATOR_HOST") != "https://storage.googleapis.com",
+    not is_real_gcs(),
     reason="This test class is for real GCS only.",
 )
 class TestZonalFileRealGCS:
@@ -479,3 +488,221 @@ class TestZonalFileRealGCS:
 
         extended_gcsfs.pipe(remote_path, overwrite_data, finalize_on_close=True)
         assert extended_gcsfs.cat(remote_path) == overwrite_data
+
+
+def test_zonal_file_fetch_range_without_prefetch_engine(mock_gcsfs):
+    """Tests _fetch_range routing to the gcsfs underlying methods when no prefetch engine exists."""
+
+    # We need a custom fake sync function to actually execute the inner `_do_fetch`
+    # coroutine so we can assert the routing logic inside of it.
+    def fake_sync(loop, func, *args, **kwargs):
+        import asyncio
+        import inspect
+
+        res = func(*args, **kwargs)
+        if inspect.iscoroutine(res):
+            return asyncio.run(res)
+        return res
+
+    with mock.patch("gcsfs.zonal_file.asyn.sync", side_effect=fake_sync):
+        zf = ZonalFile(gcsfs=mock_gcsfs, path="gs://test-bucket/test-key", mode="rb")
+
+        zf._prefetch_engine = None  # Ensure it's bypassed
+
+        # Explicitly initialize these as AsyncMocks so they can be awaited safely
+        mock_gcsfs._fetch_range_split = mock.AsyncMock(return_value=[b"split_data"])
+        mock_gcsfs._cat_file = mock.AsyncMock(return_value=b"cat_data")
+
+        result = zf._fetch_range(start=10, chunk_lengths=[5])
+
+        assert result == [b"split_data"]
+        mock_gcsfs._fetch_range_split.assert_awaited_once_with(
+            zf.path,
+            concurrency=1,
+            start=10,
+            chunk_lengths=[5],
+            size=zf.size,
+            mrd=zf.mrd_pool,
+        )
+
+        result = zf._fetch_range(start=10, end=20)
+
+        assert result == b"cat_data"
+        mock_gcsfs._cat_file.assert_awaited_once_with(
+            zf.path, start=10, end=20, concurrency=zf.pool_size, mrd=zf.mrd_pool
+        )
+
+        # Test catch of "not satisfiable"
+        mock_gcsfs._cat_file.side_effect = RuntimeError("not satisfiable")
+        result = zf._fetch_range(start=10, end=20)
+        assert result == b""
+
+        zf.close()
+
+
+@mock.patch("gcsfs.zonal_file.asyn.sync")
+@pytest.mark.asyncio
+async def test_zonal_file_async_fetch_range(mock_sync, mock_gcsfs):
+    """Tests the native coroutine called by the BackgroundPrefetcher."""
+    zf = ZonalFile(gcsfs=mock_gcsfs, path="gs://test-bucket/test-key", mode="rb")
+    mock_gcsfs._concurrent_mrd_fetch = mock.AsyncMock(return_value=b"async data")
+    result = await zf._async_fetch_range(start_offset=0, total_size=100, split_factor=2)
+    assert result == b"async data"
+    mock_gcsfs._concurrent_mrd_fetch.assert_awaited_once_with(0, 100, 2, zf.mrd_pool)
+    zf.close()
+
+
+@mock.patch("gcsfs.zonal_file.asyn.sync")
+def test_zonal_file_fetch_range_with_prefetch_engine(mock_sync, mock_gcsfs):
+    """Tests _fetch_range routing through the prefetch engine."""
+    zf = ZonalFile(gcsfs=mock_gcsfs, path="gs://test-bucket/test-key", mode="rb")
+    mock_engine = mock.Mock()
+    zf._prefetch_engine = mock_engine
+
+    mock_engine._fetch.return_value = b"all_data"
+    result = zf._fetch_range(start=0, end=10)
+    assert result == b"all_data"
+    mock_engine._fetch.assert_called_once_with(0, 10)
+
+    mock_engine.reset_mock()
+    mock_engine._fetch.side_effect = [b"chunk1", b"chunk2"]
+    result = zf._fetch_range(start=0, chunk_lengths=[6, 6])
+    assert result == [b"chunk1", b"chunk2"]
+    mock_engine._fetch.assert_has_calls([mock.call(0, 6), mock.call(6, 12)])
+
+    mock_engine.reset_mock()
+    mock_engine._fetch.side_effect = None
+    mock_engine._fetch.return_value = b"short"
+
+    result = zf._fetch_range(start=0, chunk_lengths=[10])
+    assert result == [b""]
+    zf.close()
+
+
+@mock.patch("gcsfs.zonal_file.asyn.sync")
+def test_zonal_file_pool_size_initialization(mock_sync, mock_gcsfs):
+    """Tests that pool_size is correctly set based on kwargs and env vars."""
+    zf1 = ZonalFile(
+        gcsfs=mock_gcsfs, path="gs://test-bucket/test-key", mode="rb", pool_size=10
+    )
+    assert zf1.pool_size == 10
+    zf1.close()
+
+    zf2 = ZonalFile(
+        gcsfs=mock_gcsfs,
+        path="gs://test-bucket/test-key",
+        mode="rb",
+        use_experimental_adaptive_prefetching=True,
+    )
+    assert zf2.pool_size == 1
+    assert zf2._prefetch_engine is not None
+    zf2.close()
+
+    zf3 = ZonalFile(
+        gcsfs=mock_gcsfs,
+        path="gs://test-bucket/test-key",
+        mode="rb",
+        use_experimental_adaptive_prefetching=False,
+    )
+    assert zf3.pool_size == 1
+    assert zf3._prefetch_engine is None
+    zf3.close()
+
+
+@mock.patch("gcsfs.zonal_file.asyn.sync")
+def test_zonal_file_fetch_range_mutually_exclusive(mock_sync, mock_gcsfs):
+    """Tests that providing both end and chunk_lengths raises a ValueError."""
+    zf = ZonalFile(gcsfs=mock_gcsfs, path="gs://test-bucket/test-key", mode="rb")
+    with pytest.raises(
+        ValueError, match="mutually exclusive and cannot be used together"
+    ):
+        zf._fetch_range(start=0, end=10, chunk_lengths=[10])
+    zf.close()
+
+
+@mock.patch("gcsfs.zonal_file.asyn.sync")
+def test_zonal_file_close_cleans_up_new_pools(mock_sync, mock_gcsfs):
+    """Tests that close() properly tears down the prefetch engine and MRD pool using hasattr."""
+    zf = ZonalFile(gcsfs=mock_gcsfs, path="gs://test-bucket/test-key", mode="rb")
+    mock_engine = mock.Mock()
+    zf._prefetch_engine = mock_engine
+    mock_pool = mock.Mock()
+    zf.mrd_pool = mock_pool
+    zf.close()
+
+    mock_engine.close.assert_called_once()
+    expected_call = mock.call(mock_gcsfs.loop, mock_pool.close)
+    assert expected_call in mock_sync.call_args_list
+
+
+@mock.patch("gcsfs.zonal_file.asyn.sync")
+def test_zonal_file_fetch_range_unhandled_runtime_error(mock_sync, mock_gcsfs):
+    """Tests that a RuntimeError not containing 'not satisfiable' is re-raised."""
+    zf = ZonalFile(gcsfs=mock_gcsfs, path="gs://test-bucket/test-key", mode="rb")
+    mock_engine = mock.Mock()
+    zf._prefetch_engine = mock_engine
+    mock_engine._fetch.side_effect = RuntimeError(
+        "A completely different error occurred"
+    )
+
+    with pytest.raises(RuntimeError, match="A completely different error occurred"):
+        zf._fetch_range(start=0, end=10)
+
+    with pytest.raises(RuntimeError, match="A completely different error occurred"):
+        zf._fetch_range(start=0, chunk_lengths=[10])
+
+    zf.close()
+
+
+@pytest.mark.asyncio
+@mock.patch("gcsfs.zb_hns_utils.init_mrd", new_callable=mock.AsyncMock)
+async def test_zonal_file_open_shares_idle_queue(init_mrd_mock):
+    """Two ZonalFiles opened on the same path share idle MRDs."""
+
+    mock_mrds = []
+
+    async def mock_create_mrd(*_a, **_kw):
+        m = mock.AsyncMock(persisted_size=0)
+        mock_mrds.append(m)
+        return m
+
+    init_mrd_mock.side_effect = mock_create_mrd
+
+    fs = mock.Mock()
+    fs.loop = asyncio.new_event_loop()
+    fs._get_grpc_client = mock.AsyncMock()
+    fs.grpc_client = mock.Mock()
+
+    from gcsfs.zb_hns_utils import MRDPoolCache
+
+    fs._mrd_pool_cache = MRDPoolCache(fs, max_idle_pools=8)
+
+    # Drive two opens through the real cache; bypass the rest of ZonalFile/GCSFile init.
+    pool_a = await fs._mrd_pool_cache.get("bucket", "key", "1", pool_size=1)
+    pool_b = await fs._mrd_pool_cache.get("bucket", "key", "1", pool_size=1)
+
+    assert fs._mrd_pool_cache._refcounts[("bucket", "key", "1")] == 2
+    assert init_mrd_mock.await_count == 2
+
+    a_mrd = pool_a._all_mrds[0]
+    b_mrd = pool_b._all_mrds[0]
+
+    await pool_a.close()
+    await pool_b.close()
+
+    # Verify reuse after close
+    pool_c = await fs._mrd_pool_cache.get("bucket", "key", "1", pool_size=2)
+
+    assert init_mrd_mock.await_count == 3  # 2 from before + 1 from pool_c init
+
+    async with pool_c.get_mrd() as m1:
+        assert m1 is mock_mrds[2]  # The one created in pool_c.initialize()
+
+        async with pool_c.get_mrd() as m2:
+            assert m2 is b_mrd or m2 is a_mrd  # Reused from cache
+
+    assert init_mrd_mock.await_count == 3  # No new calls in get_mrd
+
+    await pool_c.close()
+    await fs._mrd_pool_cache.close()
+    fs.loop.close()

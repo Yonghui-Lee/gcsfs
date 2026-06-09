@@ -4,6 +4,7 @@ channels:
 dependencies:
   - python==3.11
   - aiohttp
+  - build
   - crcmod
   - decorator
   - fsspec
@@ -14,11 +15,14 @@ dependencies:
   - google-cloud-core
   - google-cloud-storage
   - grpcio
+  - hatchling
+  - hatch-vcs
   - pytest
   - pytest-timeout
   - pytest-asyncio
   - pytest-cov
   - pytest-subtests
+  - pytest-xdist
   - requests
   - ujson
   - pip:

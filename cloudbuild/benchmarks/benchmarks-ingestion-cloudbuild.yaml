@@ -1,5 +1,6 @@
 substitutions:
   _DATASET_NAME: ""
+  _INFRA_PREFIX: ""
 
 steps:
   # Step 0: Create the BigQuery dataset if it doesn't exist
@@ -10,6 +11,11 @@ steps:
     args:
       - '-c'
       - |
+        if [ -z "${_DATASET_NAME}" ] || [ -z "${_INFRA_PREFIX}" ]; then
+          echo "ERROR: One or more required variables (_DATASET_NAME, _INFRA_PREFIX) are not set."
+          exit 1
+        fi
+
         bq show ${PROJECT_ID}:${_DATASET_NAME} || \
         bq mk --dataset --location=${LOCATION} ${PROJECT_ID}:${_DATASET_NAME}
 
@@ -21,6 +27,9 @@ steps:
     args:
       - '-c'
       - |
+        # Inject the dynamically provided bucket name into the JSON schema
+        sed -i "s/@INFRA_PREFIX@/${_INFRA_PREFIX}/g" cloudbuild/benchmarks/benchmarks_schema.json
+
         bq mk --project_id=${PROJECT_ID} \
           --external_table_definition=cloudbuild/benchmarks/benchmarks_schema.json \
           --force \

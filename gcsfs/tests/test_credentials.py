@@ -18,6 +18,20 @@ def test_googlecredentials_none():
     credentials.apply(headers)
 
 
+def test_no_gce_check_skips_cloud():
+    """When NO_GCE_CHECK=true, the 'cloud' method should not be attempted."""
+    with patch.dict(os.environ, {"NO_GCE_CHECK": "true"}):
+        with patch.object(GoogleCredentials, "_connect_cloud") as mock_cloud:
+            # google_default and cloud will fail; anon will succeed
+            with patch.object(
+                GoogleCredentials,
+                "_connect_google_default",
+                side_effect=ValueError("no default"),
+            ):
+                GoogleCredentials(project="myproject", token=None, access="read_only")
+            mock_cloud.assert_not_called()
+
+
 def test_connect_google_default_uses_request():
     with patch("gcsfs.credentials.gauth.default") as mock_default:
         mock_default.return_value = (Mock(), "my-project")
@@ -31,11 +45,50 @@ def test_connect_google_default_uses_request():
         assert isinstance(kwargs["request"], Request)
 
 
+def test_connect_cloud_success():
+    with patch("google.auth.compute_engine.Credentials") as mock_creds_class:
+        mock_creds = Mock()
+        mock_creds_class.return_value = mock_creds
+
+        cred = GoogleCredentials(
+            project="my-project", access="read_only", token="cloud", on_google=True
+        )
+
+        assert cred.credentials == mock_creds
+        assert mock_creds.refresh.called
+        assert cred.method == "cloud"
+
+
+def test_connect_cloud_failure():
+    import google.auth.exceptions
+
+    with patch("google.auth.compute_engine.Credentials") as mock_creds_class:
+        mock_creds = Mock()
+        mock_creds_class.return_value = mock_creds
+        mock_creds.refresh.side_effect = google.auth.exceptions.RefreshError(
+            "mock error"
+        )
+
+        with pytest.raises(ValueError, match="Invalid gcloud credentials"):
+            GoogleCredentials(
+                project="my-project", access="read_only", token="cloud", on_google=True
+            )
+
+
+def test_connect_cloud_not_on_google():
+    with pytest.raises(ValueError):
+        GoogleCredentials(
+            project="my-project", access="read_only", token="cloud", on_google=False
+        )
+
+
 @pytest.mark.parametrize("token", ["", "incorrect.token", "x" * 100])
 def test_credentials_from_raw_token(token):
     with patch.dict(os.environ, {"FETCH_RAW_TOKEN_EXPIRY": "false"}):
+        fs = GCSFileSystem(project="myproject", token=token)
+        if not fs.on_google:
+            pytest.skip("Emulator does not validate tokens")
         with pytest.raises(HttpError, match="Invalid Credentials"):
-            fs = GCSFileSystem(project="myproject", token=token)
             fs.ls("/")
 
 

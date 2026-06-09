@@ -6,6 +6,12 @@ substitutions:
   _BENCHMARK_CONFIG: ""
   # Format: "hns regional zonal"
   _BUCKET_TYPES: ""
+  _ENABLE_EXPERIMENTAL_READS: "false"
+  # Target benchmark workload (e.g., "IO" or "METADATA")
+  _BENCHMARK_TYPE: ""
+  _IO_VM_TYPE: "c4-standard-192"
+  _METADATA_VM_TYPE: "c4-standard-8"
+  _SKIP_IF_FAILED: '[[ -f /workspace/FAILED ]] && echo "Skipping: previous step failed" && exit 0'
 
 steps:
   # 1. Generate a persistent SSH key for this build run.
@@ -18,6 +24,7 @@ steps:
         mkdir -p /workspace/.ssh
         ssh-keygen -t rsa -f /workspace/.ssh/google_compute_engine -N '' -C gcb
         cat /workspace/.ssh/google_compute_engine.pub > /workspace/gcb_ssh_key.pub
+        gcloud compute os-login ssh-keys add --key-file=/workspace/gcb_ssh_key.pub --ttl=4h
     waitFor: ["-"]
 
   # 2. Initialize shared variables.
@@ -26,11 +33,28 @@ steps:
     entrypoint: "bash"
     env:
       - "BUILD_ID=${BUILD_ID}"
+      - "BRANCH_NAME=${BRANCH_NAME}"
     args:
       - "-c"
       - |
         SHORT_BUILD_ID=$${BUILD_ID:0:8}
         # Define shared variables
+        SAFE_BRANCH=$(echo -n "$${BRANCH_NAME:-unknown}" | tr -c 'a-zA-Z0-9_.-' '-')
+
+        # Error out if the branch is unknown
+        if [ "$${SAFE_BRANCH}" = "unknown" ]; then
+          echo "ERROR: BRANCH_NAME is not set or evaluates to unknown. Failing the build."
+          exit 1
+        fi
+
+        # Error out if required variables are not set
+        if [ -z "${_INFRA_PREFIX}" ] || [ -z "${_ZONE}" ] || [ -z "${_BENCHMARK_TYPE}" ]; then
+          echo "ERROR: One or more required variables (_INFRA_PREFIX, _ZONE, _BENCHMARK_TYPE) are not set."
+          exit 1
+        fi
+
+        echo "export BRANCH_NAME=$${SAFE_BRANCH}" >> /workspace/build_vars.env
+
         echo "export RUN_ID=$${BUILD_ID}" >> /workspace/build_vars.env
         echo "export REGIONAL_BUCKET=${_INFRA_PREFIX}-regional-$${SHORT_BUILD_ID}" >> /workspace/build_vars.env
         echo "export ZONAL_BUCKET=${_INFRA_PREFIX}-zonal-$${SHORT_BUILD_ID}" >> /workspace/build_vars.env
@@ -38,6 +62,39 @@ steps:
         echo "export RESULTS_BUCKET=${_INFRA_PREFIX}-run-results" >> /workspace/build_vars.env
         echo "export VM_NAME='${_INFRA_PREFIX}-vm-$${SHORT_BUILD_ID}'" >> /workspace/build_vars.env
     waitFor: ["-"]
+
+  # 2.5 Clean up leaked resources from previous failed builds.
+  - name: "gcr.io/google.com/cloudsdktool/cloud-sdk"
+    id: "cleanup-leaked-resources"
+    entrypoint: "bash"
+    args:
+      - "-c"
+      - |
+        source /workspace/build_vars.env
+        echo "Cleaning up leaked resources with prefix: ${_INFRA_PREFIX}"
+
+        CURRENT_TIME=$$(date +%s)
+        # 5 hours threshold
+        THRESHOLD=18000
+
+        VMS=$$(gcloud compute instances list --project="${PROJECT_ID}" --filter="name~'${_INFRA_PREFIX}-vm-'" --format="value(name,zone,creationTimestamp)")
+
+        while read -r name zone creation_time; do
+          if [ -z "$$name" ]; then continue; fi
+
+          CREATION_SECONDS=$$(date -d "$$creation_time" +%s)
+          AGE=$$(($$CURRENT_TIME - $$CREATION_SECONDS))
+
+          if [ $$AGE -gt $$THRESHOLD ]; then
+            echo "Deleting leaked VM: $$name in zone $$zone (Age: $$AGE seconds)"
+            gcloud compute instances delete "$$name" --project="${PROJECT_ID}" --zone="$$zone" --quiet || true
+          else
+            echo "Skipping VM: $$name (Age: $$AGE seconds)"
+          fi
+        done <<< "$$VMS"
+    waitFor: ["init-variables"]
+    allowFailure: true
+
 
   # 3. Create all necessary GCS buckets in parallel.
   - name: "gcr.io/google.com/cloudsdktool/cloud-sdk"
@@ -47,6 +104,8 @@ steps:
       - "-c"
       - |
         set -e
+        trap 'echo "create-buckets" >> /workspace/FAILED' ERR
+        ${_SKIP_IF_FAILED}
         source /workspace/build_vars.env
 
         # Create Test Buckets, in parallel
@@ -69,8 +128,9 @@ steps:
 
         wait
     waitFor: ["init-variables"]
+    allowFailure: true
 
-  # 4. Create a single VM for benchmarks.
+  # 4. Create a VM for benchmarks.
   - name: "gcr.io/google.com/cloudsdktool/cloud-sdk"
     id: "create-vm"
     entrypoint: "bash"
@@ -78,39 +138,61 @@ steps:
       - "-c"
       - |
         set -e
+        trap 'echo "create-vm" >> /workspace/FAILED' ERR
+        ${_SKIP_IF_FAILED}
+
         source /workspace/build_vars.env
 
-        echo "Creating VM: $${VM_NAME}"
+        # Set machine type and optimizations based on benchmark type
+        if [ "${_BENCHMARK_TYPE}" = "IO" ]; then
+          MACHINE_TYPE="${_IO_VM_TYPE}"
+          EXTRA_ARGS=(
+            "--boot-disk-type=hyperdisk-balanced"
+            "--network-interface=network-tier=PREMIUM,nic-type=GVNIC"
+            "--network-performance-configs=total-egress-bandwidth-tier=TIER_1"
+          )
+        else
+          MACHINE_TYPE="${_METADATA_VM_TYPE}"
+          EXTRA_ARGS=()
+        fi
+
+        echo "Creating VM: $${VM_NAME} in zone: ${_ZONE}"
         gcloud compute instances create "$$VM_NAME" \
             --project="${PROJECT_ID}" \
             --zone="${_ZONE}" \
-            --machine-type="c4-standard-192" \
+            --machine-type="$$MACHINE_TYPE" \
             --image-family="ubuntu-2404-lts-amd64" \
             --image-project="ubuntu-os-cloud" \
-            --boot-disk-type="hyperdisk-balanced" \
             --boot-disk-size="30GB" \
-            --network-interface="network-tier=PREMIUM,nic-type=GVNIC" \
-            --network-performance-configs="total-egress-bandwidth-tier=TIER_1" \
             --scopes="https://www.googleapis.com/auth/cloud-platform,https://www.googleapis.com/auth/devstorage.read_write" \
             --metadata="enable-oslogin=TRUE" \
             --service-account="${_VM_SERVICE_ACCOUNT}" \
             --tags="allow-ssh" \
             --labels="build-id=$$RUN_ID" \
-            --quiet
+            --quiet \
+            "$${EXTRA_ARGS[@]}"
     waitFor: ["init-variables"]
+    allowFailure: true
 
   # 5. Run benchmarks.
   - name: "gcr.io/google.com/cloudsdktool/cloud-sdk"
     id: "run-benchmarks"
     allowFailure: true
     entrypoint: "bash"
+    env:
+      - "BUCKET_TYPES=${_BUCKET_TYPES}"
+      - "BENCHMARK_CONFIG=${_BENCHMARK_CONFIG}"
+      - "ENABLE_EXPERIMENTAL_READS=${_ENABLE_EXPERIMENTAL_READS}"
     args:
       - "-c"
       - |
-        if [ -f /workspace/failure ]; then exit 1; fi
         set -e
+        ${_SKIP_IF_FAILED}
         source /workspace/build_vars.env
-        trap 'touch /workspace/failure' ERR
+        record_failure() {
+          echo "run-benchmarks" >> /workspace/FAILED
+        }
+        trap 'record_failure' ERR
 
         # --- Setup SSH ---
         echo "Waiting for SSH on VM: $${VM_NAME}... (attempt 1/3)"
@@ -132,7 +214,7 @@ steps:
 
         if [ "$$SSH_READY" = false ]; then
             echo "Timeout waiting for SSH."
-            touch /workspace/failure
+            record_failure
             exit 1
         fi
 
@@ -154,7 +236,7 @@ steps:
           echo "Source code copied successfully."
         else
           echo "Failed to copy source code."
-          touch /workspace/failure
+          record_failure
           exit 1
         fi
 
@@ -172,8 +254,14 @@ steps:
           echo '--- Installing pip packages ---'
           pip install --upgrade pip > /dev/null
           pip install pytest pytest-timeout pytest-subtests pytest-asyncio fusepy google-cloud-storage > /dev/null
-          pip install --upgrade --force-reinstall git+https://github.com/googleapis/python-storage.git@main
+          pip install --upgrade 'git+https://github.com/googleapis/google-cloud-python.git@main#subdirectory=packages/google-cloud-storage'
           echo '--- Installing GCSFS packages ---'
+          # Manual builds via 'gcloud builds submit' don't upload .git directory,
+          # causing hatch-vcs to fail. We use a dummy version in that case.
+          if [ ! -d .git ]; then
+            echo 'Warning: .git directory not found, using dummy version for installation'
+            export SETUPTOOLS_SCM_PRETEND_VERSION='0.0.0'
+          fi
           pip install -e . > /dev/null
           echo '--- Installing requirements for benchmarks ---'
           pip install -r gcsfs/tests/perf/microbenchmarks/requirements.txt > /dev/null
@@ -188,7 +276,7 @@ steps:
           echo "Dependencies installed successfully."
         else
           echo "Failed to install dependencies."
-          touch /workspace/failure
+          record_failure
           exit 1
         fi
 
@@ -202,6 +290,11 @@ steps:
 
           IFS=':' read -r group config <<< "$$entry"
           echo "[$$VM_NAME]: Launching benchmark run for $$group:$$config"
+
+          CUSTOM_ENV=""
+          if [[ "$$group" == *"read"* ]] && [[ "$${ENABLE_EXPERIMENTAL_READS}" == "true" ]]; then
+            CUSTOM_ENV="export USE_EXPERIMENTAL_ADAPTIVE_PREFETCHING='true'; export DEFAULT_GCSFS_CONCURRENCY=4"
+          fi
 
           CONFIG_ARG=""
           if [ -n "$$config" ]; then
@@ -224,6 +317,7 @@ steps:
             cd gcsfs
             source env/bin/activate
             export GCSFS_BENCHMARK_CPU_AFFINITY=true
+            $$CUSTOM_ENV
 
             echo \"Running Command: python gcsfs/tests/perf/microbenchmarks/run.py --group=$$group $$CONFIG_ARG $$BUCKET_ARGS --log=true --log-level=INFO\"
             python gcsfs/tests/perf/microbenchmarks/run.py --group=$$group $$CONFIG_ARG $$BUCKET_ARGS --log=true --log-level=INFO
@@ -253,8 +347,8 @@ steps:
             DATE_DIR=\$(date +%d%m%Y)
             RESULTS_DIR='gcsfs/tests/perf/microbenchmarks/__run__'
             if [ -d \"\$$RESULTS_DIR\" ]; then
-              echo \"Uploading from \$$RESULTS_DIR to gs://$${RESULTS_BUCKET}/\$${DATE_DIR}/$${RUN_ID}/\"
-              cd \"\$$RESULTS_DIR\" && gcloud storage cp --recursive . gs://$${RESULTS_BUCKET}/\$${DATE_DIR}/$${RUN_ID}/ && rm -rf *
+              echo \"Uploading from \$$RESULTS_DIR to gs://$${RESULTS_BUCKET}/branch=$${BRANCH_NAME}/\$${DATE_DIR}/$${RUN_ID}/\"
+              cd \"\$$RESULTS_DIR\" && gcloud storage cp --recursive . gs://$${RESULTS_BUCKET}/branch=$${BRANCH_NAME}/\$${DATE_DIR}/$${RUN_ID}/ && rm -rf *
             else
               echo \"No results directory found at \$$RESULTS_DIR\"
             fi
@@ -268,13 +362,13 @@ steps:
           echo "Results uploaded successfully."
         else
           echo "Failed to upload results."
-          touch /workspace/failure
+          record_failure
           exit 1
         fi
 
         if [ "$${failures:-0}" -ne 0 ]; then
           echo "ERROR: $$failures benchmark jobs failed."
-          touch /workspace/failure
+          record_failure
           exit 1
         else
           echo "All benchmarks completed successfully."
@@ -312,7 +406,7 @@ steps:
             --zone="${_ZONE}" \
             --quiet || true
     waitFor:
-      - "cleanup-ssh-key"
+      - "run-benchmarks"
 
   # 10. Delete all GCS buckets.
   - name: "gcr.io/google.com/cloudsdktool/cloud-sdk"
@@ -325,13 +419,19 @@ steps:
         source /workspace/build_vars.env
 
         if [[ " ${_BUCKET_TYPES} " =~ " regional " ]]; then
-          gcloud storage rm --recursive gs://$$REGIONAL_BUCKET &
+          (
+            gcloud storage rm --recursive gs://$$REGIONAL_BUCKET || true
+          ) &
         fi
         if [[ " ${_BUCKET_TYPES} " =~ " zonal " ]]; then
-          gcloud storage rm --recursive gs://$$ZONAL_BUCKET &
+          (
+            gcloud storage rm --recursive gs://$$ZONAL_BUCKET || true
+          ) &
         fi
         if [[ " ${_BUCKET_TYPES} " =~ " hns " ]]; then
-          gcloud storage rm --recursive gs://$$HNS_BUCKET &
+          (
+            gcloud storage rm --recursive gs://$$HNS_BUCKET || true
+          ) &
         fi
         wait
     waitFor:
@@ -344,14 +444,16 @@ steps:
     args:
       - "-c"
       - |
-        if [ -f /workspace/failure ]; then
-          echo "Build failed. See previous steps for details."
+        if [[ -f /workspace/FAILED ]]; then
+          echo "Build failed. The following steps reported failures:"
+          sort -u /workspace/FAILED | sed 's/^/ - /'
           exit 1
         fi
         echo "Build successful."
     waitFor:
       - "cleanup-vm"
       - "delete-buckets"
+      - "cleanup-ssh-key"
 
 timeout: "14400s" # 2 hours
 

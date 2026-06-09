@@ -53,6 +53,9 @@ making Rapid Storage support fully backward compatible for all operations.
 
 At initialization, ``ExtendedGcsFileSystem`` evaluates the underlying bucket's storage layout. If it detects Rapid storage, file-level operations are dynamically routed to the ``ZonalFile`` class instead of the standard ``GCSFile``.
 
+.. note::
+   For detailed information on how bucket type detection works and the layout caching strategy, please refer to the HNS documentation on :ref:`bucket-type-detection-and-caching`.
+
 Unlike standard operations which use HTTP endpoints, ``ZonalFile`` utilizes the Google Cloud Storage gRPC API—specifically the ``AsyncMultiRangeDownloader`` (MRD) for reads and ``AsyncAppendableObjectWriter`` (AAOW) for writes.
 
 Operation Semantics: Standard vs. Rapid Storage
@@ -96,7 +99,7 @@ The table below highlights how core filesystem and file-level operations change 
      - **Not applicable.** Logs a warning since streaming data cannot be canceled.
    * - **close**
      - Finalizes the file upload to GCS.
-     - Closes streams but leaves the object unfinalized (appendable) by default. Use ``finalize_on_close=True`` when opening file or calling ``close()`` or use ``.commit()`` to finalize. Note that ``autocommit`` does not work for Rapid buckets.
+     - Closes streams but leaves the object unfinalized (appendable) by default. Use ``finalize_on_close=True`` when opening file or use ``.commit()`` to finalize. Note that ``autocommit`` does not work for Rapid buckets.
    * - **mv**
      - Object-level copy-and-delete logic.
      - Uses native, atomic ``rename_folder`` API for folders. All directory semantics described in the :doc:`HNS documentation <hns_buckets>` also apply for Rapid.

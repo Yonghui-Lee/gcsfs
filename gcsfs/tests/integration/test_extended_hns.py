@@ -12,25 +12,15 @@ that has been extended or modified to support HNS features, such as `mv` (rename
 and `mkdir`.
 """
 
-import os
 import uuid
 
 import pytest
 
 from gcsfs.extended_gcsfs import BucketType
+from gcsfs.tests.conftest import requires_hns, requires_real_gcs
 from gcsfs.tests.settings import TEST_HNS_BUCKET
 
-should_run_hns = os.getenv("GCSFS_EXPERIMENTAL_ZB_HNS_SUPPORT", "false").lower() in (
-    "true",
-    "1",
-)
-
-# Skip these tests if not running against a real GCS backend or if experimentation flag is not set.
-pytestmark = pytest.mark.skipif(
-    os.environ.get("STORAGE_EMULATOR_HOST") != "https://storage.googleapis.com"
-    or not should_run_hns,
-    reason="This test class is for real GCS HNS buckets only and requires experimental flag.",
-)
+pytestmark = [requires_real_gcs, requires_hns]
 
 
 class TestExtendedGcsFileSystemMv:
@@ -978,6 +968,48 @@ class TestExtendedGcsFileSystemRm:
         assert not gcsfs.exists(files[0])
         assert gcsfs.exists(files[1])  # subdir file still exists
 
+    @pytest.mark.parametrize("order", ["flat_first", "hns_first"])
+    def test_rm_mixed_buckets_order(self, gcs_hns, flat_bucket, order):
+        """Test mixed flat and HNS bucket deletes in different orders."""
+        gcsfs = gcs_hns
+        unique_id = uuid.uuid4().hex
+
+        flat_file = f"{flat_bucket}/mixed_rm_{unique_id}/file.txt"
+        hns_empty_dir = f"{TEST_HNS_BUCKET}/mixed_rm_{unique_id}/empty_dir"
+        hns_file = f"{TEST_HNS_BUCKET}/mixed_rm_{unique_id}/nested_dir/file.txt"
+        hns_nested_dir = f"{TEST_HNS_BUCKET}/mixed_rm_{unique_id}/nested_dir"
+
+        # Ensure clean state and create targets
+        gcsfs.touch(flat_file)
+        gcsfs.mkdir(hns_empty_dir, create_parents=True)
+        gcsfs.touch(hns_file)
+
+        assert gcsfs.exists(flat_file)
+        assert gcsfs.exists(hns_empty_dir) and gcsfs.isdir(hns_empty_dir)
+        assert gcsfs.exists(hns_file)
+
+        if order == "flat_first":
+            paths = [flat_file, hns_empty_dir, hns_nested_dir]
+        else:
+            paths = [hns_empty_dir, hns_nested_dir, flat_file]
+
+        try:
+            gcsfs.rm(paths, recursive=True)
+
+            # Assert all targets no longer exist
+            assert not gcsfs.exists(flat_file)
+            assert not gcsfs.exists(hns_empty_dir)
+            assert not gcsfs.exists(hns_nested_dir)
+            assert not gcsfs.exists(hns_file)
+        finally:
+            # Cleanup if anything remained
+            for p in [flat_file, hns_empty_dir, hns_nested_dir]:
+                try:
+                    if gcsfs.exists(p):
+                        gcsfs.rm(p, recursive=True)
+                except Exception:
+                    pass
+
 
 @pytest.fixture()
 def test_structure(gcs_hns):
@@ -1059,6 +1091,13 @@ class TestExtendedGcsFileSystemFindIntegration:
         assert sorted(result_dirs) == sorted(
             expected_result
         ), "find with prefix and withdirs=True should return matching files and directories."
+
+    def test_find_partial_prefix(self, gcs_hns, test_structure):
+        """Test find with a partial folder prefix (Issue #830)."""
+        base_dir = test_structure["base_dir"]
+        # Partial match for "empty_dir"
+        result = gcs_hns.find(base_dir, withdirs=True, prefix="empty_")
+        assert result == [test_structure["empty_dir"]]
 
     def test_find_on_file(self, gcs_hns, test_structure):
         """Test that calling find on a single file returns only that file."""
@@ -1612,3 +1651,52 @@ class TestHNSFolderStatus:
         # Clean up
         gcsfs.rmdir(folder_path)
         assert not gcsfs.exists(folder_path)
+
+
+class TestExtendedGcsFileSystemHnsRequesterPays:
+    """Integration tests for HNS operations on requester pays buckets."""
+
+    def test_hns_mkdir_fails_without_quota_project(
+        self, hns_requester_pays_bucket, gcs_factory
+    ):
+        """Test that HNS mkdir fails if quota project is not provided on a req pays bucket."""
+
+        bucket = hns_requester_pays_bucket
+        dir_path = f"{bucket}/new_dir_{uuid.uuid4().hex}"
+
+        fs = gcs_factory(requester_pays=False)
+
+        # It raises ValueError with custom message if it detects requester pays
+        with pytest.raises(ValueError) as excinfo:
+            fs.mkdir(dir_path)
+
+        assert "Bucket is requester pays" in str(excinfo.value)
+
+    def test_hns_mkdir_succeeds_with_quota_project(
+        self, hns_requester_pays_bucket, gcs_factory
+    ):
+        """Test that HNS mkdir succeeds if quota project is provided on a req pays bucket."""
+
+        bucket = hns_requester_pays_bucket
+        dir_path = f"{bucket}/new_dir_{uuid.uuid4().hex}"
+
+        # Pass project explicitly to ensure it's used as quota_project_id
+        fs = gcs_factory(requester_pays=True)
+
+        fs.mkdir(dir_path)
+        # Invalidate cache to force reading from backend
+        fs.invalidate_cache()
+        assert fs.isdir(dir_path)
+
+    def test_hns_bucket_type_detection_with_req_pays(
+        self, hns_requester_pays_bucket, gcs_factory
+    ):
+        """Test that hns apis are invoked and return HNS when req pays is enabled."""
+
+        fs = gcs_factory(requester_pays=True)
+
+        # Clear cache to force lookup
+        fs._storage_layout_cache.clear()
+
+        bucket_type = fs._sync_lookup_bucket_type(hns_requester_pays_bucket)
+        assert bucket_type == BucketType.HIERARCHICAL

@@ -82,6 +82,54 @@ def run_multi_threaded(
     publish_resource_metrics(benchmark, m)
 
 
+def run_multi_threaded_fixed_duration(
+    benchmark, monitor_cls, params, worker_func, args_list, benchmark_group
+):
+    """
+    Runs a multi-threaded benchmark for a fixed duration and records bytes per round.
+
+    Note: In gcsfs, while the workload submission is multi-threaded (using a ThreadPoolExecutor),
+    the actual execution of underlying requests in gcsfs is handled using multi-coroutines
+    running in a single background event loop thread.
+
+    Args:
+        worker_func: The function to run in each thread. It must return bytes processed.
+        args_list: A list of tuples, where each tuple contains arguments for one thread.
+    """
+    publish_benchmark_extra_info(benchmark, params, benchmark_group)
+
+    total_bytes_per_round = []
+    with monitor_cls() as m:
+        for round_num in range(params.rounds):
+            logging.info(
+                f"Multi-threaded fixed-duration {benchmark_group} benchmark: "
+                f"Starting round {round_num + 1}/{params.rounds}."
+            )
+            with ThreadPoolExecutor(max_workers=params.threads) as executor:
+                futures = [executor.submit(worker_func, *args) for args in args_list]
+                total_bytes_per_round.append(sum(f.result() for f in futures))
+
+    publish_fixed_duration_benchmark_extra_info(
+        benchmark, total_bytes_per_round, params
+    )
+    publish_resource_metrics(benchmark, m)
+
+    # This is to ensure the JSON report is generated correctly by pytest-benchmark
+    benchmark.pedantic(lambda: None, rounds=1, iterations=1, warmup_rounds=0)
+
+
+def _multiprocess_worker_wrapper(worker_target, args):
+    """Wrapper to apply emulator mock inside spawned child processes."""
+    from gcsfs.tests.utils import _patch_get_bucket_type_for_emulator
+
+    patch = _patch_get_bucket_type_for_emulator()
+    if patch:
+        with patch:
+            worker_target(*args)
+    else:
+        worker_target(*args)
+
+
 def run_multi_process(
     benchmark,
     monitor_cls,
@@ -137,7 +185,10 @@ def run_multi_process(
                     p_args = args_builder(
                         worker_gcs_instances[i], i, process_data_shared
                     )
-                    p = ctx.Process(target=worker_target, args=p_args)
+                    p = ctx.Process(
+                        target=_multiprocess_worker_wrapper,
+                        args=(worker_target, p_args),
+                    )
                     processes.append(p)
                     p.start()
             finally:
