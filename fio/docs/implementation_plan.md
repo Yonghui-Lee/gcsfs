@@ -1,6 +1,6 @@
 # Implementation Plan: High-Performance Direct FIO Engine for gcsfs
 
-Design and implementation plan for a custom FIO external I/O engine (`libgcsfs-fio-engine.so`) that embeds the Python interpreter inside FIO processes to benchmark `gcsfs` at wire-speed, drawing structural inspiration from `/usr/local/google/home/yonghuili/Projects/gcs-py-sdk-fio-engine` but incorporating key architectural improvements to eliminate GIL contention and maximize performance.
+Design and implementation plan for a custom FIO external I/O engine (`libgcsfs_async_fio_engine.so`) that embeds the Python interpreter inside FIO processes to benchmark `gcsfs` at wire-speed, drawing structural inspiration from `/usr/local/google/home/yonghuili/Projects/gcs-py-sdk-fio-engine` but incorporating key architectural improvements to eliminate GIL contention and maximize performance.
 
 ---
 
@@ -21,8 +21,8 @@ The engine consists of two core components operating in a hybrid C/Python space:
 sequenceDiagram
     autonumber
     participant FIO as FIO Engine Loop
-    participant C as C Wrapper (libgcsfs_fio_engine.so)
-    participant Py as Python Adapter (gcsfs_adapter.py)
+    participant C as C Wrapper (libgcsfs_async_fio_engine.so)
+    participant Py as Python Adapter (gcsfs_async_adapter.py)
     participant GCSFS as gcsfs (asyncio Event Loop)
 
     Note over FIO,C: Fork-per-worker (thread=0)
@@ -55,14 +55,14 @@ sequenceDiagram
     deactivate C
 ```
 
-### 1. `gcsfs_engine.c` (The C Hot Path)
-A compiled shared library loaded by FIO as an external engine (`--ioengine=external:/path/to/libgcsfs-fio-engine.so`).
+### 1. `gcsfs_async_engine.c` (The C Hot Path)
+A compiled shared library loaded by FIO as an external engine (`--ioengine=external:/path/to/libgcsfs_async_fio_engine.so`).
 * **`init` (Post-Fork):** Initializes the embedded Python interpreter (`Py_Initialize`), loads the Python adapter module, and starts the async loop thread.
 * **`queue`:** Hands I/O requests to the Python adapter. To achieve minimum overhead (<5µs budget), it acquires the GIL, wraps the C transfer buffer (`io_u->xfer_buf`) as a Python `memoryview` (zero-copy boundary crossing), invokes Python's async submission function, releases the GIL, and returns `FIO_Q_QUEUED` immediately.
 * **`getevents`:** Crucially **never holds the GIL**. It blocks using a high-efficiency Linux `epoll_wait` over an `eventfd` which is signaled by the C completion callback. Upon wake-up, it drains a thread-safe lockless Single-Producer Single-Consumer (SPSC) ring buffer containing finished IO units.
 * **C Completion Callback (`c_complete_trampoline`):** Invoked by the Python asyncio loop thread when a `gcsfs` coroutine finishes. It pushes the completed `io_u` to the SPSC ring buffer and writes a byte to the `eventfd` to wake the main FIO thread.
 
-### 2. `gcsfs_adapter.py` (The Python Async Orchestrator)
+### 2. `gcsfs_async_adapter.py` (The Python Async Orchestrator)
 Runs a dedicated background thread with a high-performance event loop (`uvloop`).
 * **Background Event Loop:** Manages a single instance of `GCSFileSystem(asynchronous=True)` bound to its running loop.
 * **`submit_io`:** Schedules a coroutine to execute the requested file operation (e.g., `_cat_file` for reads, `_pipe_file` for writes) on the event loop thread.
@@ -114,22 +114,22 @@ When configuring high-core VM architectures, we recommend separating core affini
 
 ## Proposed Changes
 
-### 1. [NEW] [gcsfs_engine.c](file:///usr/local/google/home/yonghuili/Projects/gcsfs/prototype/gcsfs_engine.c)
+### 1. [NEW] [gcsfs_async_engine.c](file:///usr/local/google/home/yonghuili/Projects/migrate-fio-engine/gcsfs/fio/gcsfs_async_engine.c)
 A C library wrapping FIO external engine hooks and embedding Python. Key functions to implement:
 * `fio_gcsfs_init`: Initializes CPython post-fork, creates the lockless SPSC ring buffer, and sets up the `eventfd` + `epoll` context.
-* `fio_gcsfs_queue`: Acquires GIL, wraps the C buffer as a `memoryview`, and calls `gcsfs_adapter.submit_io()`.
+* `fio_gcsfs_queue`: Acquires GIL, wraps the C buffer as a `memoryview`, and calls `gcsfs_async_adapter.submit_io()`.
 * `fio_gcsfs_getevents`: Releases/does not acquire GIL. Blocks on `epoll_wait` over `eventfd`, then pops completed `io_u` structures from the ring buffer.
 * `c_complete_trampoline`: Invoked from Python via a `ctypes.CFUNCTYPE` trampoline. Pushes `io_u` to the SPSC ring, writes to `eventfd`, keeping execution time <1µs.
 
-### 2. [NEW] [gcsfs_adapter.py](file:///usr/local/google/home/yonghuili/Projects/gcsfs/prototype/gcsfs_adapter.py)
+### 2. [NEW] [gcsfs_async_adapter.py](file:///usr/local/google/home/yonghuili/Projects/migrate-fio-engine/gcsfs/fio/gcsfs_async_adapter.py)
 The Python side of the embedded engine:
 * Manages a dedicated event loop thread (`uvloop` if available, otherwise default `asyncio`).
 * Hosts a persistent thread-bound `gcsfs.GCSFileSystem(asynchronous=True)`.
 * Configures `fs.retries = 1` to ensure zero-copy writes are safe (preventing FIO from modifying buffers during TCP retries).
 * Exposes a clean `submit_io` API that schedules coroutines, tracks in-flight tasks to prevent premature garbage collection, and maps exceptions (`FileNotFoundError`, etc.) to standard system `errno` codes before invoking the C completion trampoline.
 
-### 3. [NEW] [Makefile](file:///usr/local/google/home/yonghuili/Projects/gcsfs/prototype/Makefile)
-A lightweight build system to compile `gcsfs_engine.c` into a shared object:
+### 3. [NEW] [Makefile](file:///usr/local/google/home/yonghuili/Projects/migrate-fio-engine/gcsfs/fio/Makefile)
+A lightweight build system to compile `gcsfs_async_engine.c` into a shared object:
 * Uses `python3-config --cflags --embed` and `python3-config --ldflags --embed` to guarantee robust linking across different system architectures.
 * Links against target FIO headers.
 

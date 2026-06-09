@@ -218,13 +218,13 @@ static int py_init_interpreter_internal(void) {
     PyList_Append(sysPath, cwd);
     Py_DECREF(cwd);
 
-    PyObject *pName = PyUnicode_FromString("gcsfs_adapter");
+    PyObject *pName = PyUnicode_FromString("gcsfs_async_adapter");
     pModule = PyImport_Import(pName);
     Py_DECREF(pName);
 
     if (pModule == NULL) {
         PyErr_Print();
-        fprintf(stderr, "Failed to load module 'gcsfs_adapter'\n");
+        fprintf(stderr, "Failed to load module 'gcsfs_async_adapter'\n");
         return 1;
     }
 

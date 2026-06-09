@@ -12,12 +12,12 @@ PY_SONAME = $(shell python3 -c "import sysconfig; print(sysconfig.get_config_var
 .PHONY: all clean clean-all help check-bucket run-smoke-async run-smoke-sync run-smoke-local run-smoke-all
 
 # Default target compiles all engines
-all: libgcsfs_fio_engine.so libgcsfs_sync_fio_engine.so
+all: libgcsfs_async_fio_engine.so libgcsfs_sync_fio_engine.so
 
-libgcsfs_fio_engine.so: gcsfs_engine.c $(FIO_SRC)/config-host.h
+libgcsfs_async_fio_engine.so: gcsfs_async_engine.c $(FIO_SRC)/config-host.h
 	gcc -O3 -g -shared -fPIC -Wall -Wextra -Wno-unused-parameter \
 		-DPY_SONAME=\"$(PY_SONAME)\" \
-		-o libgcsfs_fio_engine.so gcsfs_engine.c \
+		-o libgcsfs_async_fio_engine.so gcsfs_async_engine.c \
 		-I$(FIO_SRC) \
 		$(PY_CFLAGS) $(PY_LDFLAGS) \
 		-pthread
@@ -40,7 +40,7 @@ $(FIO_SRC)/config-host.h: $(FIO_SRC)
 	cd $(FIO_SRC) && ./configure
 
 clean:
-	rm -f libgcsfs_fio_engine.so libgcsfs_sync_fio_engine.so
+	rm -f libgcsfs_async_fio_engine.so libgcsfs_sync_fio_engine.so
 
 clean-all: clean
 	rm -rf $(FIO_SRC)

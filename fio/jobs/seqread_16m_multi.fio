@@ -1,5 +1,5 @@
 [global]
-ioengine=external:./libgcsfs_fio_engine.so
+ioengine=external:./libgcsfs_async_fio_engine.so
 bs=16M
 size=1G
 time_based=1

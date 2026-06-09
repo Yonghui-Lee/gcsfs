@@ -31,8 +31,8 @@ To achieve a **single-copy pipeline**, we must bypass `grpcio` and `protobuf` Py
 sequenceDiagram
     autonumber
     participant FIO as FIO Engine Loop
-    participant C as C Wrapper (gcsfs_engine.c)
-    participant Py as Python Adapter (gcsfs_adapter.py)
+    participant C as C Wrapper (gcsfs_async_engine.c)
+    participant Py as Python Adapter (gcsfs_async_adapter.py)
     participant Cy as Cython Reader (gcsfs_grpc_reader.so)
     participant Native as Native gRPC C++ Library
 
@@ -63,7 +63,7 @@ A compiled Cython module that links directly against `libgrpc++` and native GCS 
 * **Zero-Copy Python Wrapping:** Cython wraps this raw pointer into a Python `memoryview` using the lightweight `PyMemoryView_FromMemory` C-API wrapper. No heap allocation or data copying takes place.
 
 ### 2. The Python Adapter Integration
-The `gcsfs_adapter.py` is updated to route read requests to our custom `gcsfs_grpc_reader` instead of `ExtendedGcsFileSystem._cat_file`:
+The `gcsfs_async_adapter.py` is updated to route read requests to our custom `gcsfs_grpc_reader` instead of `ExtendedGcsFileSystem._cat_file`:
 ```python
 async def _do_async_read(ctx: ReaderContext, offset: int, size: int, buffer_view):
     # Execute the raw gRPC C++ stream reader

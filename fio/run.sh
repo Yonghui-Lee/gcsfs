@@ -22,7 +22,7 @@ if ! command -v fio &> /dev/null; then
 fi
 
 # 3. Check if the FIO engines are compiled
-if [ ! -f "$SCRIPT_DIR/libgcsfs_fio_engine.so" ] || [ ! -f "$SCRIPT_DIR/libgcsfs_sync_fio_engine.so" ]; then
+if [ ! -f "$SCRIPT_DIR/libgcsfs_async_fio_engine.so" ] || [ ! -f "$SCRIPT_DIR/libgcsfs_sync_fio_engine.so" ]; then
     echo -e "\033[33;1mWarning: Embedded GCSFS engines are not compiled or missing.\033[0m"
     echo -e "Attempting to build them now using 'make'..."
     make -C "$SCRIPT_DIR"

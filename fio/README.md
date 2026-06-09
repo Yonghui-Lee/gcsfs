@@ -8,8 +8,8 @@ This directory provides two high-performance, **CPython-embedded FIO I/O engines
 
 Depending on your benchmarking goals, you can choose between two distinct runtime engines:
 
-### A. Lockless Asynchronous Engine (`gcsfs`)
-* **Shared Library:** `libgcsfs_fio_engine.so`
+### A. Lockless Asynchronous Engine (`gcsfs_async`)
+* **Shared Library:** `libgcsfs_async_fio_engine.so`
 * **Focus:** Maximum raw physical network, gRPC, and hardware pipeline capacity.
 * **Mechanism:** Decouples I/O submission and completion using a background thread running a high-speed `uvloop` (asyncio). Finished operations communicate back to the main FIO thread via an `eventfd` and a **lockless Single-Producer Single-Consumer (SPSC) circular ring buffer** using atomic memory barriers. The Python Global Interpreter Lock (GIL) is only held during task queueing (<5µs) and is completely bypassed during block transfers and completion blocking, enabling massive pipeline concurrency.
 * **API Path:** Leverages GCSFS's high-speed private asynchronous block transport layer `_async_fetch_range`.
@@ -28,7 +28,7 @@ Depending on your benchmarking goals, you can choose between two distinct runtim
 
 ## 2. Architecture Visual Comparison
 
-### Lockless Async Engine (`gcsfs`)
+### Lockless Async Engine (`gcsfs_async`)
 ```
   fio worker (process)
 ┌────────────────────────────────────────┐
@@ -89,7 +89,7 @@ Build both dynamic shared engines by running:
 make
 ```
 This automatically downloads matching FIO source headers and compiles:
-* `libgcsfs_fio_engine.so` (Asynchronous engine)
+* `libgcsfs_async_fio_engine.so` (Asynchronous engine)
 * `libgcsfs_sync_fio_engine.so` (Synchronous engine)
 
 ---
@@ -198,7 +198,7 @@ cache_type=readahead_chunked
 block_size=8388608
 ```
 
-### A. Lockless Async Engine (`libgcsfs_fio_engine.so`) Options
+### A. Lockless Async Engine (`libgcsfs_async_fio_engine.so`) Options
 
 | Option Key | Data Type | Default Value | Description |
 | :--- | :--- | :--- | :--- |
@@ -217,7 +217,7 @@ block_size=8388608
 
 ## 6. Directory Structure & Job Profiles
 
-* **`gcsfs_engine.c` / `gcsfs_adapter.py`**: Lockless Async dynamic engine C source and Python mapping logic.
+* **`gcsfs_async_engine.c` / `gcsfs_async_adapter.py`**: Lockless Async dynamic engine C source and Python mapping logic.
 * **`gcsfs_sync_engine.c` / `gcsfs_sync_adapter.py`**: Synchronous dynamic engine C source and Python fsspec-caching mapping.
 * **`run.sh`**: Dynamic Python path environment helper tool.
 * **`Makefile`**: Compilation actions, simple cloud smoke validation suite wrappers.
@@ -240,7 +240,7 @@ To maximize performance when running benchmarks on actual Google Cloud Zonal buc
 
 * **Adaptive Prefetching (`use_prefetch=1`):** In read tests, enabling the background prefetcher yields the highest throughput because it spins up concurrent, pre-emptive read threads that bypass standard inline cache parsing. By setting `cache_type=none`, it completely avoids double-buffering.
 * **Vectorized Read-Ahead (`cache_type=readahead_chunked`):** If you are not using background prefetching, the `"readahead_chunked"` cache strategy is the most optimized fsspec cache strategy for Zonal buckets. It taps into GCSFS's dynamic vector-range read logic (using high-throughput concurrent gRPC chunk downloads), maintaining standard read-ahead semantics while avoiding large data memory slice copying.
-* **GIL Bypassing Async Engine (`libgcsfs_fio_engine.so`):** For maximum throughput tests designed to reach full line rate (especially over large multi-job benchmarks), always prefer the lockless asynchronous engine, as it releases the Python GIL during the I/O completion path to avoid processing bottlenecks.
+* **GIL Bypassing Async Engine (`libgcsfs_async_fio_engine.so`):** For maximum throughput tests designed to reach full line rate (especially over large multi-job benchmarks), always prefer the lockless asynchronous engine, as it releases the Python GIL during the I/O completion path to avoid processing bottlenecks.
 
 ---
 

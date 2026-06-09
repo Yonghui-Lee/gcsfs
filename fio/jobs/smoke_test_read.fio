@@ -1,7 +1,7 @@
 # prototype/jobs/smoke_test_read.fio
 
 [global]
-ioengine=external:./libgcsfs_fio_engine.so
+ioengine=external:./libgcsfs_async_fio_engine.so
 bs=1M
 size=1G
 numjobs=1
