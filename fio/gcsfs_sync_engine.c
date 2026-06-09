@@ -299,14 +299,17 @@ static int py_sync_storage_open(struct thread_data *td, struct fio_file *f) {
         return 1;
     }
 
-    long handle = PyLong_AsLong(result);
-    Py_DECREF(result);
+    if (result == Py_None) {
+        Py_DECREF(result);
+        PyGILState_Release(gstate);
+        return 1;
+    }
 
     // Keep handle registration in FIO file context
-    f->engine_data = (void *)(uintptr_t)handle;
+    f->engine_data = (void *)result;
 
     PyGILState_Release(gstate);
-    return (handle == 0) ? 1 : 0;
+    return 0;
 }
 
 /*
@@ -315,15 +318,14 @@ static int py_sync_storage_open(struct thread_data *td, struct fio_file *f) {
 static int py_sync_storage_close(struct thread_data *td, struct fio_file *f) {
     PyGILState_STATE gstate = PyGILState_Ensure();
 
-    long handle = (long)(uintptr_t)f->engine_data;
-    PyObject *arg_handle = PyLong_FromLong(handle);
-    PyObject *args = PyTuple_Pack(1, arg_handle);
-    Py_XDECREF(arg_handle);
-    PyObject *result = PyObject_CallObject(pFuncClose, args);
-    Py_DECREF(args);
-
-    if (result) Py_DECREF(result);
-    else PyErr_Print();
+    PyObject *handle_obj = (PyObject *)f->engine_data;
+    if (handle_obj) {
+        PyObject *result = PyObject_CallFunctionObjArgs(pFuncClose, handle_obj, NULL);
+        if (result) Py_DECREF(result);
+        else PyErr_Print();
+        Py_DECREF(handle_obj); // Release reference kept since open
+        f->engine_data = NULL;
+    }
 
     PyGILState_Release(gstate);
     return 0;
@@ -333,7 +335,7 @@ static int py_sync_storage_close(struct thread_data *td, struct fio_file *f) {
  * Synchronous queue method. Excutes block I/O completely synchronously.
  */
 static enum fio_q_status py_sync_storage_queue(struct thread_data *td, struct io_u *io_u) {
-    long handle = (long)(uintptr_t)io_u->file->engine_data;
+    PyObject *handle_obj = (PyObject *)io_u->file->engine_data;
     int is_write = (io_u->ddir == DDIR_WRITE);
 
     PyGILState_STATE gstate = PyGILState_Ensure();
@@ -352,20 +354,16 @@ static enum fio_q_status py_sync_storage_queue(struct thread_data *td, struct io
         return FIO_Q_COMPLETED;
     }
 
-    PyObject *arg_handle = PyLong_FromLong(handle);
     PyObject *arg_offset = PyLong_FromLongLong(io_u->offset);
-    PyObject *args = PyTuple_Pack(3, arg_handle, arg_offset, memview);
-    Py_XDECREF(arg_handle);
-    Py_XDECREF(arg_offset);
 
     PyObject *result;
     if (is_write) {
-        result = PyObject_CallObject(pFuncWrite, args);
+        result = PyObject_CallFunctionObjArgs(pFuncWrite, handle_obj, arg_offset, memview, NULL);
     } else {
-        result = PyObject_CallObject(pFuncRead, args);
+        result = PyObject_CallFunctionObjArgs(pFuncRead, handle_obj, arg_offset, memview, NULL);
     }
 
-    Py_DECREF(args);
+    Py_XDECREF(arg_offset);
     Py_DECREF(memview);
 
     long ret_bytes = -1;

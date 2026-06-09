@@ -1,0 +1,11 @@
+# fio/jobs/smoke_test_sync_write_64m.fio
+
+[global]
+ioengine=external:./libgcsfs_sync_fio_engine.so
+bs=64M
+size=1G
+numjobs=1
+filename=${BUCKET_NAME}/1g_file_64m
+
+[sync_write_job]
+rw=write

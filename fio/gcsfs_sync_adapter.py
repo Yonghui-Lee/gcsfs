@@ -14,9 +14,6 @@ logger = logging.getLogger("fio-gcsfs-sync")
 # -------------------------------------------------------------------------
 
 _filesystems = {}
-_handles = {}
-_handle_lock = threading.Lock()
-_next_handle_id = 1
 
 # Lock to prevent race conditions during multi-threaded initialization
 _init_lock = threading.Lock()
@@ -30,31 +27,6 @@ class HandleContext:
     def __init__(self, f, protocol):
         self.f = f
         self.protocol = protocol
-
-
-# -------------------------------------------------------------------------
-# Helper Functions
-# -------------------------------------------------------------------------
-
-
-def _register_handle(obj):
-    global _next_handle_id
-    with _handle_lock:
-        hid = _next_handle_id
-        _handles[hid] = obj
-        _next_handle_id += 1
-        return hid
-
-
-def _get_handle(hid):
-    with _handle_lock:
-        return _handles.get(hid)
-
-
-def _remove_handle(hid):
-    with _handle_lock:
-        if hid in _handles:
-            del _handles[hid]
 
 
 def _get_protocol_and_path(filename):
@@ -170,16 +142,15 @@ def py_sync_open(
 
             f = fs.open(path, **open_kwargs)
 
-        return _register_handle(HandleContext(f, protocol))
+        return HandleContext(f, protocol)
     except Exception as e:
         logger.error(f"Sync Open failed for {filename} (mode={mode}): {e}")
-        return 0
+        return None
 
 
-def py_sync_read(handle, offset, buffer_view):
-    ctx = _get_handle(handle)
-    if not ctx:
-        logger.error(f"Sync Read failed: invalid handle {handle}")
+def py_sync_read(ctx, offset, buffer_view):
+    if ctx is None:
+        logger.error("Sync Read failed: ctx is None")
         return -1
     try:
         f = ctx.f
@@ -198,10 +169,9 @@ def py_sync_read(handle, offset, buffer_view):
         return -1
 
 
-def py_sync_write(handle, offset, buffer_view):
-    ctx = _get_handle(handle)
-    if not ctx:
-        logger.error(f"Sync Write failed: invalid handle {handle}")
+def py_sync_write(ctx, offset, buffer_view):
+    if ctx is None:
+        logger.error("Sync Write failed: ctx is None")
         return -1
     try:
         f = ctx.f
@@ -220,15 +190,13 @@ def py_sync_write(handle, offset, buffer_view):
         return -1
 
 
-def py_sync_close(handle):
-    ctx = _get_handle(handle)
-    if not ctx:
+def py_sync_close(ctx):
+    if ctx is None:
         return -1
     try:
         f = ctx.f
         # Closing the sync GCSFile/fsspec file automatically flushes buffers and finalizes the upload
         f.close()
-        _remove_handle(handle)
         return 0
     except Exception as e:
         logger.error(f"Sync Close failed: {e}")

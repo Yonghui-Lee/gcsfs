@@ -3,7 +3,7 @@
 # GCSFS FIO Embedded Engines Build & Test Suite
 # ==============================================================================
 
-FIO_VERSION = 3.39
+FIO_VERSION = 3.41
 FIO_SRC = fio-src
 PY_CFLAGS = $(shell python3-config --cflags --embed)
 PY_LDFLAGS = $(shell python3-config --ldflags --embed)
