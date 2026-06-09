@@ -127,10 +127,14 @@ void c_complete_trampoline(void *ptd_ptr, void *io_u_ptr, int err, unsigned long
 /*
  * FIO specific options for our engine
  */
-struct py_options {
+struct py_async_options {
     void *pad;
     unsigned int iodepth;
     unsigned int flush_every_write;
+    unsigned int block_size;
+    unsigned int use_prefetch;
+    unsigned int concurrency;
+    char *cache_type;
 };
 
 static struct fio_option options[] = {
@@ -138,9 +142,48 @@ static struct fio_option options[] = {
         .name = "flush_every_write",
         .lname = "flush_every_write",
         .type = FIO_OPT_BOOL,
-        .off1 = offsetof(struct py_options, flush_every_write),
+        .off1 = offsetof(struct py_async_options, flush_every_write),
         .def = "0",
         .help = "If true, flushes the writer after every append",
+        .category = FIO_OPT_C_ENGINE,
+        .group = FIO_OPT_G_INVALID,
+    },
+    {
+        .name = "block_size",
+        .lname = "block_size",
+        .type = FIO_OPT_INT,
+        .off1 = offsetof(struct py_async_options, block_size),
+        .def = "16777216", // 16MB default
+        .help = "Read-ahead buffer block size in bytes",
+        .category = FIO_OPT_C_ENGINE,
+        .group = FIO_OPT_G_INVALID,
+    },
+    {
+        .name = "use_prefetch",
+        .lname = "use_prefetch",
+        .type = FIO_OPT_BOOL,
+        .off1 = offsetof(struct py_async_options, use_prefetch),
+        .def = "1",
+        .help = "Enable adaptive background prefetcher (requires read mode)",
+        .category = FIO_OPT_C_ENGINE,
+        .group = FIO_OPT_G_INVALID,
+    },
+    {
+        .name = "concurrency",
+        .lname = "concurrency",
+        .type = FIO_OPT_INT,
+        .off1 = offsetof(struct py_async_options, concurrency),
+        .def = "4",
+        .help = "Number of concurrent requests to fetch the data",
+        .category = FIO_OPT_C_ENGINE,
+        .group = FIO_OPT_G_INVALID,
+    },
+    {
+        .name = "cache_type",
+        .lname = "cache_type",
+        .type = FIO_OPT_STR_STORE,
+        .off1 = offsetof(struct py_async_options, cache_type),
+        .help = "GCSFS cache strategy (e.g. none, readahead, readahead_chunked)",
         .category = FIO_OPT_C_ENGINE,
         .group = FIO_OPT_G_INVALID,
     },
@@ -155,11 +198,11 @@ static struct fio_option options[] = {
 /*
  * Initialize the GCSFS lockless async engine. Enforces process-only mode (thread=0).
  */
-static int py_storage_init(struct thread_data *td) {
+static int py_async_storage_init(struct thread_data *td) {
     return 0;
 }
 
-static void py_storage_cleanup(struct thread_data *td) {
+static void py_async_storage_cleanup(struct thread_data *td) {
     struct py_thread_data *ptd = td->io_ops_data;
     if (ptd) {
         if (ptd->event_fd >= 0) {
@@ -203,8 +246,13 @@ static int run_subprocess_gcs_size(const char *filename, uint64_t *out_size) {
     return 0;
 }
 
-static int py_init_interpreter_internal(void) {
+static int py_async_init_interpreter_internal(struct thread_data *td) {
     if (Py_IsInitialized()) return 0;
+
+    struct py_async_options *o = td->eo;
+    char buf[32];
+    snprintf(buf, sizeof(buf), "%u", o ? o->concurrency : 4);
+    setenv("DEFAULT_GCSFS_CONCURRENCY", buf, 1);
 
     void *libpython = dlopen(PY_SONAME, RTLD_GLOBAL | RTLD_NOW);
     if (!libpython) {
@@ -228,11 +276,11 @@ static int py_init_interpreter_internal(void) {
         return 1;
     }
 
-    pFuncInit = PyObject_GetAttrString(pModule, "py_init");
-    pFuncOpen = PyObject_GetAttrString(pModule, "py_open");
-    pFuncClose = PyObject_GetAttrString(pModule, "py_close");
-    pFuncQueue = PyObject_GetAttrString(pModule, "py_queue");
-    pFuncGetSize = PyObject_GetAttrString(pModule, "py_get_file_size");
+    pFuncInit = PyObject_GetAttrString(pModule, "py_async_init");
+    pFuncOpen = PyObject_GetAttrString(pModule, "py_async_open");
+    pFuncClose = PyObject_GetAttrString(pModule, "py_async_close");
+    pFuncQueue = PyObject_GetAttrString(pModule, "py_async_queue");
+    pFuncGetSize = PyObject_GetAttrString(pModule, "py_async_get_file_size");
 
     if (!pFuncInit || !pFuncOpen || !pFuncClose || !pFuncQueue || !pFuncGetSize) {
         if (PyErr_Occurred()) PyErr_Print();
@@ -245,9 +293,9 @@ static int py_init_interpreter_internal(void) {
 }
 
 static pthread_mutex_t init_mutex = PTHREAD_MUTEX_INITIALIZER;
-static int py_is_runtime_initialized = 0;
+static int py_async_is_runtime_initialized = 0;
 
-static int py_thread_data_init(struct thread_data *td) {
+static int py_async_thread_data_init(struct thread_data *td) {
     if (td->io_ops_data) {
         return 0;
     }
@@ -268,15 +316,15 @@ static int py_thread_data_init(struct thread_data *td) {
     return 0;
 }
 
-static int py_init_runtime_deferred(struct thread_data *td) {
+static int py_async_init_runtime_deferred(struct thread_data *td) {
     pthread_mutex_lock(&init_mutex);
 
-    if (py_is_runtime_initialized) {
+    if (py_async_is_runtime_initialized) {
         pthread_mutex_unlock(&init_mutex);
         return 0;
     }
 
-    if (py_init_interpreter_internal() != 0) {
+    if (py_async_init_interpreter_internal(td) != 0) {
         pthread_mutex_unlock(&init_mutex);
         return 1;
     }
@@ -309,7 +357,7 @@ static int py_init_runtime_deferred(struct thread_data *td) {
         return 1;
     }
 
-    py_is_runtime_initialized = 1;
+    py_async_is_runtime_initialized = 1;
     pthread_mutex_unlock(&init_mutex);
     return 0;
 }
@@ -317,7 +365,7 @@ static int py_init_runtime_deferred(struct thread_data *td) {
 /*
  * Determine the real file size (using subprocess to avoid contaminating master process).
  */
-static int py_storage_get_file_size(struct thread_data *td, struct fio_file *f) {
+static int py_async_storage_get_file_size(struct thread_data *td, struct fio_file *f) {
     uint64_t gcs_size = 0;
     int has_gcs = 0;
 
@@ -350,26 +398,39 @@ static int py_storage_get_file_size(struct thread_data *td, struct fio_file *f) 
     return 0;
 }
 
-static int py_storage_open(struct thread_data *td, struct fio_file *f) {
-    if (py_init_runtime_deferred(td))
+static int py_async_storage_open(struct thread_data *td, struct fio_file *f) {
+    if (py_async_init_runtime_deferred(td))
         return 1;
-    if (py_thread_data_init(td))
+    if (py_async_thread_data_init(td))
         return 1;
 
     PyGILState_STATE gstate = PyGILState_Ensure();
 
-    struct py_options *o = td->eo;
+    struct py_async_options *o = td->eo;
     int is_write = (td->o.td_ddir == TD_DDIR_WRITE);
 
     PyObject *arg_filename = PyUnicode_FromString(f->file_name);
     PyObject *arg_is_write = PyBool_FromLong(is_write);
     PyObject *arg_flush = PyBool_FromLong(o->flush_every_write);
     PyObject *arg_size = PyLong_FromLongLong((long long)f->real_file_size);
-    PyObject *args = PyTuple_Pack(4, arg_filename, arg_is_write, arg_flush, arg_size);
+    PyObject *arg_block_size = PyLong_FromLong(o->block_size);
+    PyObject *arg_use_prefetch = PyBool_FromLong(o->use_prefetch);
+    PyObject *arg_concurrency = PyLong_FromLong(o->concurrency);
+    PyObject *arg_cache_type = o->cache_type ? PyUnicode_FromString(o->cache_type) : Py_None;
+    if (arg_cache_type == Py_None) {
+        Py_INCREF(Py_None);
+    }
+
+    PyObject *args = PyTuple_Pack(8, arg_filename, arg_is_write, arg_flush, arg_size,
+                                 arg_block_size, arg_use_prefetch, arg_concurrency, arg_cache_type);
     Py_XDECREF(arg_filename);
     Py_XDECREF(arg_is_write);
     Py_XDECREF(arg_flush);
     Py_XDECREF(arg_size);
+    Py_XDECREF(arg_block_size);
+    Py_XDECREF(arg_use_prefetch);
+    Py_XDECREF(arg_concurrency);
+    Py_XDECREF(arg_cache_type);
 
     PyObject *result = PyObject_CallObject(pFuncOpen, args);
     Py_DECREF(args);
@@ -380,28 +441,30 @@ static int py_storage_open(struct thread_data *td, struct fio_file *f) {
         return 1;
     }
 
-    long handle = PyLong_AsLong(result);
-    Py_DECREF(result);
+    if (result == Py_None) {
+        Py_DECREF(result);
+        PyGILState_Release(gstate);
+        return 1;
+    }
 
-    // Store the python handle ID in the fio file structure
-    f->engine_data = (void *)(uintptr_t)handle;
+    // Keep handle registration in FIO file context (result holds a strong reference)
+    f->engine_data = (void *)result;
 
     PyGILState_Release(gstate);
-    return (handle == 0) ? 1 : 0;
+    return 0;
 }
 
-static int py_storage_close(struct thread_data *td, struct fio_file *f) {
+static int py_async_storage_close(struct thread_data *td, struct fio_file *f) {
     PyGILState_STATE gstate = PyGILState_Ensure();
 
-    long handle = (long)(uintptr_t)f->engine_data;
-    PyObject *arg_handle = PyLong_FromLong(handle);
-    PyObject *args = PyTuple_Pack(1, arg_handle);
-    Py_XDECREF(arg_handle);
-    PyObject *result = PyObject_CallObject(pFuncClose, args);
-    Py_DECREF(args);
-
-    if (result) Py_DECREF(result);
-    else PyErr_Print();
+    PyObject *ctx = (PyObject *)f->engine_data;
+    if (ctx) {
+        PyObject *result = PyObject_CallFunctionObjArgs(pFuncClose, ctx, NULL);
+        if (result) Py_DECREF(result);
+        else PyErr_Print();
+        Py_DECREF(ctx); // Release reference kept since open
+        f->engine_data = NULL;
+    }
 
     PyGILState_Release(gstate);
     return 0;
@@ -427,7 +490,7 @@ static void py_gcsfs_io_u_free(struct thread_data *td, struct io_u *io_u) {
     }
 }
 
-static enum fio_q_status py_storage_queue(struct thread_data *td, struct io_u *io_u) {
+static enum fio_q_status py_async_storage_queue(struct thread_data *td, struct io_u *io_u) {
     struct py_thread_data *ptd = td->io_ops_data;
     if (!ptd) {
         io_u->error = EIO;
@@ -436,7 +499,7 @@ static enum fio_q_status py_storage_queue(struct thread_data *td, struct io_u *i
 
     PyGILState_STATE gstate = PyGILState_Ensure();
 
-    long handle = (long)(uintptr_t)io_u->file->engine_data;
+    PyObject *ctx = (PyObject *)io_u->file->engine_data;
     int is_write = (io_u->ddir == DDIR_WRITE);
     struct gcsfs_io_u_data *iud = io_u->engine_data;
 
@@ -463,20 +526,18 @@ static enum fio_q_status py_storage_queue(struct thread_data *td, struct io_u *i
     // Pass the io_u pointer as the per-IO 'tag' and the per-job ptd pointer so
     // the completion trampoline knows which ring to push into. Both are opaque
     // PyLong-wrapped pointers from Python's perspective.
-    PyObject *arg_handle = PyLong_FromLong(handle);
     PyObject *arg_ptd = PyLong_FromVoidPtr(ptd);
     PyObject *arg_tag = PyLong_FromVoidPtr(io_u);
     PyObject *arg_offset = PyLong_FromLongLong(io_u->offset);
     PyObject *arg_is_write = PyBool_FromLong(is_write);
     PyObject *args = PyTuple_Pack(6,
-        arg_handle,
+        ctx,
         arg_ptd,
         arg_tag,
         arg_offset,
         (PyObject *)iud->memview,
         arg_is_write
     );
-    Py_XDECREF(arg_handle);
     Py_XDECREF(arg_ptd);
     Py_XDECREF(arg_tag);
     Py_XDECREF(arg_offset);
@@ -508,7 +569,7 @@ static enum fio_q_status py_storage_queue(struct thread_data *td, struct io_u *i
  * Waits for events from the lockless SPSC ring buffer and blocks on eventfd if empty.
  * This is completely GIL-free!
  */
-static int py_storage_getevents(struct thread_data *td, unsigned int min, unsigned int max, const struct timespec *t) {
+static int py_async_storage_getevents(struct thread_data *td, unsigned int min, unsigned int max, const struct timespec *t) {
     struct py_thread_data *ptd = td->io_ops_data;
 
     ptd->events_count = 0;
@@ -546,7 +607,7 @@ static int py_storage_getevents(struct thread_data *td, unsigned int min, unsign
             if (errno == EINTR) {
                 continue;
             }
-            perror("poll failed in py_storage_getevents");
+            perror("poll failed in py_async_storage_getevents");
             return -1;
         } else if (poll_ret == 0) {
             break; // Timeout
@@ -568,7 +629,7 @@ static int py_storage_getevents(struct thread_data *td, unsigned int min, unsign
  * Returns the actual IO unit for the next completed event.
  * This is completely GIL-free!
  */
-static struct io_u *py_storage_event(struct thread_data *td, int event) {
+static struct io_u *py_async_storage_event(struct thread_data *td, int event) {
     struct py_thread_data *ptd = td->io_ops_data;
 
     if (event >= ptd->events_count) {
@@ -594,19 +655,19 @@ static struct io_u *py_storage_event(struct thread_data *td, int event) {
 }
 
 struct ioengine_ops ioengine = {
-    .name = "gcsfs",
+    .name = "gcsfs_async",
     .version = FIO_IOOPS_VERSION,
-    .init = py_storage_init,
-    .cleanup = py_storage_cleanup,
-    .open_file = py_storage_open,
-    .close_file = py_storage_close,
-    .get_file_size = py_storage_get_file_size,
-    .queue = py_storage_queue,
-    .getevents = py_storage_getevents,
-    .event = py_storage_event,
+    .init = py_async_storage_init,
+    .cleanup = py_async_storage_cleanup,
+    .open_file = py_async_storage_open,
+    .close_file = py_async_storage_close,
+    .get_file_size = py_async_storage_get_file_size,
+    .queue = py_async_storage_queue,
+    .getevents = py_async_storage_getevents,
+    .event = py_async_storage_event,
     .io_u_init = py_gcsfs_io_u_init,
     .io_u_free = py_gcsfs_io_u_free,
     .flags = FIO_DISKLESSIO | FIO_NOEXTEND | FIO_NODISKUTIL,
     .options = options,
-    .option_struct_size = sizeof(struct py_options),
+    .option_struct_size = sizeof(struct py_async_options),
 };

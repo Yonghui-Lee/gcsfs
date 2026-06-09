@@ -19,9 +19,6 @@ logger = logging.getLogger("fio-gcsfs")
 _loop = None
 _loop_thread = None
 _fs = None
-_handles = {}
-_handle_lock = threading.Lock()
-_next_handle_id = 1
 _iodepth = 64
 _trampoline_fn = None
 
@@ -63,24 +60,6 @@ class WriterContext(FileContext):
         self.written_bytes = 0
 
 
-def _register_handle(obj):
-    global _next_handle_id
-    with _handle_lock:
-        hid = _next_handle_id
-        _handles[hid] = obj
-        _next_handle_id += 1
-        return hid
-
-
-def _get_handle(hid):
-    with _handle_lock:
-        return _handles.get(hid)
-
-
-def _remove_handle(hid):
-    with _handle_lock:
-        if hid in _handles:
-            del _handles[hid]
 
 
 # -------------------------------------------------------------------------
@@ -103,7 +82,11 @@ def _completion_callback(f: Future, ptd_tag: int, tag: int):
 
 
 async def _do_async_read(ctx: ReaderContext, offset: int, size: int, buffer_view):
-    if hasattr(ctx.f, "_async_fetch_range"):
+    # Check if prefetch engine is active on this file handle
+    prefetch_engine = getattr(ctx.f, "_prefetch_engine", None)
+    if prefetch_engine is not None:
+        data = await prefetch_engine._async_fetch(offset, offset + size)
+    elif hasattr(ctx.f, "_async_fetch_range"):
         data = await ctx.f._async_fetch_range(offset, size)
     else:
 
@@ -163,7 +146,7 @@ async def _do_open_writer(filename, total_size) -> str:
 # -------------------------------------------------------------------------
 
 
-def py_init(iodepth, trampoline_ptr):
+def py_async_init(iodepth, trampoline_ptr):
     global _loop, _loop_thread, _iodepth, _trampoline_fn
 
     with _init_lock:
@@ -211,7 +194,7 @@ async def _do_get_file_size(filename):
     return info.get("size", -1)
 
 
-def py_get_file_size(filename):
+def py_async_get_file_size(filename):
     try:
         if _fs is None:
             from gcsfs.core import GCSFileSystem
@@ -228,7 +211,16 @@ def py_get_file_size(filename):
         return -1
 
 
-def py_open(filename, is_write, flush_writes=False, total_size=0):
+def py_async_open(
+    filename,
+    is_write,
+    flush_writes=False,
+    total_size=0,
+    block_size=16777216,
+    use_prefetch=True,
+    concurrency=None,
+    cache_type=None,
+):
     try:
         # Check protocol to verify it is a GCS path
         import fsspec
@@ -241,6 +233,8 @@ def py_open(filename, is_write, flush_writes=False, total_size=0):
                 or filename.startswith("../")
             ):
                 protocol = "gs"
+            else:
+                path = filename
 
         if protocol != "gs":
             raise ValueError(
@@ -251,25 +245,36 @@ def py_open(filename, is_write, flush_writes=False, total_size=0):
 
         if is_write:
             future = asyncio.run_coroutine_threadsafe(
-                _do_open_writer(filename, total_size), _loop
+                _do_open_writer(path, total_size), _loop
             )
             location = future.result(timeout=30)
-            ctx = WriterContext(filename, location, total_size, flush_writes)
-            return _register_handle(ctx)
+            ctx = WriterContext(path, location, total_size, flush_writes)
+            return ctx
         else:
-            # Read mode: Use gcs.open() with default cache to maximize throughput
-            # and reuse gRPC streams, matching standard GCSFS performance patterns.
-            f = _fs.open(filename, "rb", concurrency=_iodepth)
-            ctx = ReaderContext(filename, f=f)
-            return _register_handle(ctx)
+            if cache_type is not None:
+                if isinstance(cache_type, str) and cache_type.lower() == "none":
+                    cache_type = "none"
+            else:
+                cache_type = "none" if use_prefetch else None
+
+            # Open file in standard async mode using GCSFS fs.open
+            f = _fs.open(
+                path,
+                "rb",
+                block_size=block_size,
+                cache_type=cache_type,
+                use_experimental_adaptive_prefetching=use_prefetch,
+                concurrency=concurrency if concurrency is not None else _iodepth,
+            )
+            ctx = ReaderContext(path, f=f)
+            return ctx
 
     except Exception as e:
         logger.error(f"Open failed for {filename}: {e}")
-        return 0
+        return None
 
 
-def py_close(handle):
-    ctx = _get_handle(handle)
+def py_async_close(ctx):
     if not ctx:
         return -1
     try:
@@ -296,15 +301,13 @@ def py_close(handle):
             if ctx.f:
                 # GCSFile.close() is sync but calls asyn.sync(mrd_pool.close) internally for Zonal
                 ctx.f.close()
-        _remove_handle(handle)
         return 0
     except Exception as e:
         logger.error(f"Close failed: {e}")
         return -1
 
 
-def py_queue(handle, ptd_tag, tag, offset, buffer_view, is_write):
-    ctx = _get_handle(handle)
+def py_async_queue(ctx, ptd_tag, tag, offset, buffer_view, is_write):
     if not ctx:
         return -1
     try:
