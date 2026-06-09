@@ -1909,7 +1909,11 @@ class GCSFileSystem(asyn.AsyncFileSystem):
 
                 # Fast local parent extraction
                 parent_path = parent.rstrip("/")
-                parent = parent_path.rsplit("/", 1)[0] if "/" in parent_path else self.root_marker
+                parent = (
+                    parent_path.rsplit("/", 1)[0]
+                    if "/" in parent_path
+                    else self.root_marker
+                )
 
         if not prefix and update_cache:
             cache_entries_list = {k: list(v.values()) for k, v in cache_entries.items()}
