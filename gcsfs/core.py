@@ -15,9 +15,7 @@ import warnings
 import weakref
 from datetime import datetime, timedelta
 from glob import has_magic
-from urllib.parse import parse_qs
 from urllib.parse import quote as quote_urllib
-from urllib.parse import urlsplit
 
 import aiohttp
 import fsspec
@@ -2003,25 +2001,38 @@ class GCSFileSystem(asyn.AsyncFileSystem):
         if "/" not in path:
             return path, "", None
         bucket, keypart = path.split("/", 1)
+
+        if not version_aware:
+            return bucket, keypart, None
+
         key = keypart
         generation = None
-        if version_aware:
-            parts = urlsplit(keypart)
-            try:
-                if parts.fragment:
-                    generation = parts.fragment
-                elif parts.query:
-                    parsed = parse_qs(parts.query)
-                    if "generation" in parsed:
-                        generation = parsed["generation"][0]
-                # Sanity check whether this could be a valid generation ID. If
-                # it is not, assume that # or ? characters are supposed to be
-                # part of the object name.
-                if generation is not None:
-                    int(generation)
-                    key = parts.path
-            except ValueError:
-                generation = None
+
+        if "#" in keypart:
+            # Fragment is more common and faster to parse
+            base_key, gen = keypart.split("#", 1)
+            if gen:
+                try:
+                    int(gen)
+                    generation = gen
+                    key = base_key
+                except ValueError:
+                    pass
+        elif "?" in keypart and "generation=" in keypart:
+            # Try simple string split for query param to avoid full parse_qs overhead
+            parts = keypart.split("?", 1)
+            if len(parts) == 2:
+                base_key, query = parts
+                gen_part = [p for p in query.split("&") if p.startswith("generation=")]
+                if gen_part:
+                    gen = gen_part[0][11:]
+                    try:
+                        int(gen)
+                        generation = gen
+                        key = base_key
+                    except ValueError:
+                        pass
+
         return (
             bucket,
             key,
