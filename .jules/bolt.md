@@ -1,0 +1,3 @@
+## 2024-06-14 - Optimize path splitting hot path
+**Learning:** Avoid heavy standard library string parsing functions like `urllib.parse.urlsplit` and `urllib.parse.parse_qs` in critical hot paths (like `_split_path` which handles every file operation). Native string operations (`.split("#")` and `.split("?")`) are often significantly faster (2-3x for query strings) when the expected format is simple and well-understood.
+**Action:** Profile frequently called URL and path parsing functions and prefer basic string methods over fully-featured standard library parsers when full compliance parsing isn't strictly necessary or when the scope of data being extracted is very limited (like finding a single `generation=` parameter).
