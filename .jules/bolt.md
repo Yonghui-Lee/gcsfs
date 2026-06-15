@@ -1,0 +1,3 @@
+## 2024-05-18 - Replacing urllib.parse with string splits in hot paths
+**Learning:** Functions like `urllib.parse.urlsplit` and `parse_qs` introduce significant overhead when called repeatedly inside critical path processing components like `gcsfs.core.GCSFileSystem._split_path`. Standard python string manipulation (`split`, `startswith`, `in`) is often orders of magnitude faster.
+**Action:** When working on a codebase that parses a massive number of paths or URLs, profile to see if standard python string processing can replace heavier parsing libraries if only a specific subset of functionality is needed.
