@@ -16,9 +16,7 @@ import warnings
 import weakref
 from datetime import datetime, timedelta
 from glob import has_magic
-from urllib.parse import parse_qs
 from urllib.parse import quote as quote_urllib
-from urllib.parse import urlsplit
 
 import aiohttp
 import fsspec
@@ -2244,6 +2242,7 @@ class GCSFileSystem(DirCacheUpdater, asyn.AsyncFileSystem):
                                 gen_str = part.split("=", 1)[1] if "=" in part else ""
                                 if "%" in gen_str:
                                     from urllib.parse import unquote
+
                                     gen_str = unquote(gen_str)
                                 generation = gen_str
                                 break
