@@ -163,18 +163,19 @@ def _chunks(lst, n):
 
 def _coalesce_generation(*args):
     """Helper to coalesce a list of object generations down to one."""
-    generations = set(args)
-    if None in generations:
-        generations.remove(None)
-    if len(generations) > 1:
-        raise ValueError(
-            "Cannot coalesce generations where more than one are defined,"
-            f" {generations}"
-        )
-    elif len(generations) == 0:
-        return None
-    else:
-        return generations.pop()
+    res = None
+    for arg in args:
+        if arg is not None:
+            if res is None:
+                res = arg
+            elif res != arg:
+                generations = set(args)
+                generations.discard(None)
+                raise ValueError(
+                    "Cannot coalesce generations where more than one are defined,"
+                    f" {generations}"
+                )
+    return res
 
 
 def _is_directory_marker(entry):
@@ -446,8 +447,10 @@ class GCSFileSystem(DirCacheUpdater, asyn.AsyncFileSystem):
         for protocol in protos:
             if path.startswith(protocol + "://"):
                 path = path[len(protocol) + 3 :]
+                break
             elif path.startswith(protocol + "::"):
                 path = path[len(protocol) + 2 :]
+                break
         # use of root_marker to make minimum required path, e.g., "/"
         return path or cls.root_marker
 
@@ -2225,26 +2228,44 @@ class GCSFileSystem(DirCacheUpdater, asyn.AsyncFileSystem):
         path = cls._strip_protocol(path).lstrip("/")
         if "/" not in path:
             return path, "", None
-        bucket, keypart = path.split("/", 1)
-        key = keypart
+        bucket, key = path.split("/", 1)
         generation = None
         if version_aware:
-            parts = urlsplit(keypart)
-            try:
-                if parts.fragment:
-                    generation = parts.fragment
-                elif parts.query:
-                    parsed = parse_qs(parts.query)
-                    if "generation" in parsed:
-                        generation = parsed["generation"][0]
-                # Sanity check whether this could be a valid generation ID. If
-                # it is not, assume that # or ? characters are supposed to be
-                # part of the object name.
-                if generation is not None:
-                    int(generation)
-                    key = parts.path
-            except ValueError:
-                generation = None
+            # Check for fragment first
+            hash_idx = key.find("#")
+            if hash_idx != -1:
+                try:
+                    gen_str = key[hash_idx + 1:]
+                    int(gen_str)
+                    generation = gen_str
+                    key = key[:hash_idx]
+                except ValueError:
+                    pass
+            else:
+                # Check for query parameter
+                q_idx = key.find("?")
+                if q_idx != -1:
+                    query_str = key[q_idx + 1:]
+
+                    # Need to check that "generation=" is at the beginning or after "&"
+                    gen_idx = query_str.find("generation=")
+                    while gen_idx != -1:
+                        if gen_idx == 0 or query_str[gen_idx - 1] == "&":
+                            gen_val_start = gen_idx + 11  # len("generation=")
+                            gen_val_end = query_str.find("&", gen_val_start)
+                            if gen_val_end == -1:
+                                gen_str = query_str[gen_val_start:]
+                            else:
+                                gen_str = query_str[gen_val_start:gen_val_end]
+                            try:
+                                int(gen_str)
+                                generation = gen_str
+                                key = key[:q_idx]
+                                break
+                            except ValueError:
+                                pass
+
+                        gen_idx = query_str.find("generation=", gen_idx + 11)
         return (
             bucket,
             key,
