@@ -16,9 +16,7 @@ import warnings
 import weakref
 from datetime import datetime, timedelta
 from glob import has_magic
-from urllib.parse import parse_qs
 from urllib.parse import quote as quote_urllib
-from urllib.parse import urlsplit
 
 import aiohttp
 import fsspec
@@ -2235,7 +2233,7 @@ class GCSFileSystem(DirCacheUpdater, asyn.AsyncFileSystem):
             hash_idx = key.find("#")
             if hash_idx != -1:
                 try:
-                    gen_str = key[hash_idx + 1:]
+                    gen_str = key[hash_idx + 1 :]
                     int(gen_str)
                     generation = gen_str
                     key = key[:hash_idx]
@@ -2245,7 +2243,7 @@ class GCSFileSystem(DirCacheUpdater, asyn.AsyncFileSystem):
                 # Check for query parameter
                 q_idx = key.find("?")
                 if q_idx != -1:
-                    query_str = key[q_idx + 1:]
+                    query_str = key[q_idx + 1 :]
 
                     # Need to check that "generation=" is at the beginning or after "&"
                     gen_idx = query_str.find("generation=")
