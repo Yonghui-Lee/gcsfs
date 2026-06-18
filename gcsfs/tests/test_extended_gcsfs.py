@@ -1134,6 +1134,9 @@ def test_read_block_zb(extended_gcsfs, gcs_bucket_mocks, subtests):
                         for call in call_args_list:
                             actual_ranges.extend(call[0][0])
 
+                        # Ranges can be requested concurrently, so sort them to ensure consistent ordering
+                        actual_ranges.sort(key=lambda x: x[0])
+
                         if delimiter:
                             # fsspec dynamically calculates read block offsets when hunting
                             # for delimiters. We just assert that it requested ranges.
