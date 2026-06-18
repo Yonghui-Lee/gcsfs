@@ -1895,23 +1895,42 @@ class GCSFileSystem(DirCacheUpdater, asyn.AsyncFileSystem):
                     # If this parent doesn't match the prefix, neither will its parents.
                     break
 
-                dirs[parent] = {
-                    "Key": dir_key,
-                    "Size": 0,
-                    "name": parent,
-                    "StorageClass": "DIRECTORY",
-                    "type": "directory",
-                    "size": 0,
-                }
+                is_new_dir = parent not in dirs
+                if is_new_dir:
+                    dirs[parent] = {
+                        "Key": dir_key,
+                        "Size": 0,
+                        "name": parent,
+                        "StorageClass": "DIRECTORY",
+                        "type": "directory",
+                        "size": 0,
+                    }
 
                 if not prefix and update_cache:
                     listing = cache_entries.setdefault(parent, {})
                     name = previous["name"]
                     if name not in listing:
                         listing[name] = previous
+                    elif not is_new_dir:
+                        # If the directory was already in `dirs` and its previous
+                        # element is already in the listing, we can stop traversing
+                        # up because the rest of the hierarchy is already built.
+                        break
+                elif not is_new_dir:
+                    # If we aren't updating cache and the directory is already in `dirs`,
+                    # we can stop traversing up.
+                    break
 
                 previous = dirs[parent]
-                parent = self._parent(parent)
+
+                # Fast local parent extraction
+                parent_path = parent.rstrip("/")
+                parent = (
+                    parent_path.rsplit("/", 1)[0]
+                    if "/" in parent_path
+                    else self.root_marker
+                )
+
         if not prefix and update_cache:
             cache_entries_list = {k: list(v.values()) for k, v in cache_entries.items()}
             self.dircache.update(cache_entries_list)
