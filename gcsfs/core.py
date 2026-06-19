@@ -1887,6 +1887,16 @@ class GCSFileSystem(DirCacheUpdater, asyn.AsyncFileSystem):
             previous = obj
 
             while parent:
+                if parent in dirs:
+                    # We already processed this parent directory and its ancestors
+                    # Just ensure the previous object is added to the cache entries
+                    if not prefix and update_cache:
+                        listing = cache_entries.setdefault(parent, {})
+                        name = previous["name"]
+                        if name not in listing:
+                            listing[name] = previous
+                    break
+
                 dir_key = self.split_path(parent)[1]
                 if not dir_key or len(parent) < len(path.rstrip("/")):
                     break

@@ -1,0 +1,3 @@
+## 2024-06-12 - Rebuilding directory tree performance bottleneck
+**Learning:** `GCSFileSystem._get_dirs_and_update_cache` constructs a hierarchy from a flat list of objects. Previously, it traversed all the way to the root path for *every* object, leading to extreme redundancy and O(N * Depth) complexity. For buckets with many objects sharing the same deeply nested parent directories, this was a massive performance bottleneck.
+**Action:** Always consider the tree structure when extracting parents from flat lists. Adding an early break check (`if parent in dirs:`) ensures that each directory and its ancestors are only processed once, turning the complexity to O(N + UniqueDirs).
