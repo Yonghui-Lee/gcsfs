@@ -1,0 +1,3 @@
+## 2024-05-18 - Avoid Set Iterations in Python Hot Paths
+**Learning:** Frequent instantiations of Python built-in objects like `set()` combined with mutation functions like `.remove()` in hot paths (e.g. `_coalesce_generation` which processes metadata values extensively) cause significant memory overhead and slowdown due to object allocations. Simple loops are often more efficient for very small input sets (like comparing 2-3 arguments).
+**Action:** When working on frequently-called core routines processing a small finite number of arguments, avoid structure instantiations (`set()`, `list()`) and prefer manual variable iteration and `is not None` identity checks.
