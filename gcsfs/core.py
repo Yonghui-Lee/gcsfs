@@ -16,9 +16,7 @@ import warnings
 import weakref
 from datetime import datetime, timedelta
 from glob import has_magic
-from urllib.parse import parse_qs
 from urllib.parse import quote as quote_urllib
-from urllib.parse import urlsplit
 
 import aiohttp
 import fsspec
@@ -163,18 +161,18 @@ def _chunks(lst, n):
 
 def _coalesce_generation(*args):
     """Helper to coalesce a list of object generations down to one."""
-    generations = set(args)
-    if None in generations:
-        generations.remove(None)
-    if len(generations) > 1:
-        raise ValueError(
-            "Cannot coalesce generations where more than one are defined,"
-            f" {generations}"
-        )
-    elif len(generations) == 0:
-        return None
-    else:
-        return generations.pop()
+    res = None
+    for arg in args:
+        if arg is not None:
+            if res is not None and res != arg:
+                generations = set(args)
+                generations.discard(None)
+                raise ValueError(
+                    "Cannot coalesce generations where more than one are defined,"
+                    f" {generations}"
+                )
+            res = arg
+    return res
 
 
 def _is_directory_marker(entry):
@@ -444,10 +442,14 @@ class GCSFileSystem(DirCacheUpdater, asyn.AsyncFileSystem):
         path = stringify_path(path)
         protos = (cls.protocol,) if isinstance(cls.protocol, str) else cls.protocol
         for protocol in protos:
-            if path.startswith(protocol + "://"):
-                path = path[len(protocol) + 3 :]
-            elif path.startswith(protocol + "::"):
-                path = path[len(protocol) + 2 :]
+            if path.startswith(protocol):
+                rem = path[len(protocol) :]
+                if rem.startswith("://"):
+                    path = rem[3:]
+                    break
+                elif rem.startswith("::"):
+                    path = rem[2:]
+                    break
         # use of root_marker to make minimum required path, e.g., "/"
         return path or cls.root_marker
 
@@ -2243,22 +2245,40 @@ class GCSFileSystem(DirCacheUpdater, asyn.AsyncFileSystem):
         key = keypart
         generation = None
         if version_aware:
-            parts = urlsplit(keypart)
             try:
-                if parts.fragment:
-                    generation = parts.fragment
-                elif parts.query:
-                    parsed = parse_qs(parts.query)
-                    if "generation" in parsed:
-                        generation = parsed["generation"][0]
+                hash_idx = keypart.find("#")
+                if hash_idx != -1:
+                    generation = keypart[hash_idx + 1 :]
+                    if not generation:
+                        generation = None
+                    if generation is not None:
+                        key = keypart[:hash_idx]
+                        q_idx = key.find("?")
+                        if q_idx != -1:
+                            key = key[:q_idx]
+                if generation is None:
+                    q_idx = keypart.find("?")
+                    if q_idx != -1:
+                        query = keypart[q_idx + 1 :]
+                        hash_in_query_idx = query.find("#")
+                        if hash_in_query_idx != -1:
+                            query = query[:hash_in_query_idx]
+                        for param in query.split("&"):
+                            if param.startswith("generation="):
+                                generation = param[11:]
+                                if not generation:
+                                    generation = None
+                                break
+                        if generation is not None:
+                            key = keypart[:q_idx]
                 # Sanity check whether this could be a valid generation ID. If
                 # it is not, assume that # or ? characters are supposed to be
                 # part of the object name.
                 if generation is not None:
                     int(generation)
-                    key = parts.path
             except ValueError:
                 generation = None
+                key = keypart
         return (
             bucket,
             key,

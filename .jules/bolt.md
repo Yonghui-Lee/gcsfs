@@ -1,0 +1,3 @@
+## 2024-05-24 - [Avoid urllib.parse in GCS hot paths]
+**Learning:** Functions like `_split_path` and `_strip_protocol` in `gcsfs/core.py` are critical hot paths for every file listing or fetch. The standard library's `urllib.parse.urlsplit` and `parse_qs` introduce significant overhead (~4x slower) compared to explicit string `find` and slicing operations because they handle many generic URI edges cases.
+**Action:** Replace `urllib.parse` usage with native string manipulation (`find`, slices) in URL path parsers when the expected format is constrained (e.g. `path?generation=X#fragment`), and ensure to test permutations of `?` and `#` edge cases.
