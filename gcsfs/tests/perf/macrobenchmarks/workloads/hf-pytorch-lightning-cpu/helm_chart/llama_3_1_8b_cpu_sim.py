@@ -331,17 +331,13 @@ class StepTimeCallback(Callback):
 class LoggedModelCheckpoint(ModelCheckpoint):
     """ModelCheckpoint wrapper that logs save/delete duration.
 
-    Under DDP, only rank 0 actually writes the checkpoint; that single
-    upload of the bf16 Llama 8B state_dict (~16 GB) to gs:// is the
-    headline IO event we want to time.
+    Supports both standard monolithic pickling and parallel PyTorch Distributed
+    Checkpointing (DCP), selected dynamically via the USE_DCP environment variable.
     """
 
     def _save_checkpoint(self, trainer, filepath):
         # Log wall-clock time.time() (not perf_counter) for the "Start time"
-        # absolute timestamp the metrics parser pairs across log lines:
-        # perf_counter's origin is per-process and meaningless outside it. Writes
-        # are rank-0 only so this is less load-bearing than the restore path
-        # below, but keeps every checkpoint timestamp on one comparable clock.
+        # absolute timestamp the metrics parser pairs across log lines
         logging.info(
             "Checkpoint Save : Rank: %d : Step: %d : Start time: %f seconds: Path: %s",
             trainer.global_rank,
@@ -350,7 +346,111 @@ class LoggedModelCheckpoint(ModelCheckpoint):
             filepath,
         )
         start_time = time.perf_counter()
-        super()._save_checkpoint(trainer, filepath)
+
+        use_dcp = os.getenv("USE_DCP", "false").lower() in ("true", "1", "yes")
+
+        if not use_dcp:
+            super()._save_checkpoint(trainer, filepath)
+        else:
+            import shutil
+
+            import fsspec
+            import torch.distributed as dist
+            import torch.distributed.checkpoint as dcp
+
+            # Check if filepath is a GCS path
+            is_gcs = filepath.startswith("gs://")
+
+            # We use a local directory for DCP saving
+            if is_gcs:
+                local_dir = f"/home/yonghuili_google_com/gcsfs/checkpoints/dcp_tmp_{trainer.global_step}"
+            else:
+                local_dir = filepath
+
+            # Ensure local directory is empty and exists (on Rank 0)
+            if trainer.global_rank == 0:
+                if os.path.exists(local_dir):
+                    shutil.rmtree(local_dir)
+                os.makedirs(local_dir, exist_ok=True)
+
+            # Sync across ranks so all processes see the folder exists
+            if dist.is_initialized():
+                dist.barrier()
+
+            # Build DCP state dict
+            state_dict = {
+                "model": trainer.lightning_module.state_dict(),
+                "optimizer": (
+                    trainer.optimizers[0].state_dict() if trainer.optimizers else {}
+                ),
+            }
+
+            # Save via PyTorch Distributed Checkpoint
+            dcp.save(state_dict, storage_writer=dcp.FileSystemWriter(local_dir))
+
+            # Wait for all ranks to finish saving local shards
+            if dist.is_initialized():
+                dist.barrier()
+
+            # If it was GCS, upload the folder to GCS using fsspec/gcsfs
+            if is_gcs:
+                # Rank 0 clears any existing GCS target directory first
+                if trainer.global_rank == 0:
+                    fs = fsspec.filesystem("gs")
+                    if fs.exists(filepath):
+                        fs.rm(filepath, recursive=True)
+
+                # Sync all ranks before starting the parallel upload
+                if dist.is_initialized():
+                    dist.barrier()
+
+                # Distributed upload: every rank uploads its assigned files concurrently
+                rank = trainer.global_rank
+                fs = fsspec.filesystem("gs")
+
+                if os.path.exists(local_dir):
+                    local_files = os.listdir(local_dir)
+                    for filename in local_files:
+                        local_file_path = os.path.join(local_dir, filename)
+                        remote_file_path = f"{filepath}/{filename}"
+
+                        # Decide if this rank is responsible for this file
+                        should_upload = False
+                        if filename == ".metadata" and rank == 0:
+                            should_upload = True
+                        elif filename.startswith(f"__{rank}_"):
+                            should_upload = True
+
+                        if should_upload:
+                            logging.info(
+                                "[DCP SPEEDUP] Rank %d is uploading local file %s to %s",
+                                rank,
+                                filename,
+                                remote_file_path,
+                            )
+                            fs.put_file(
+                                local_file_path, remote_file_path, overwrite=True
+                            )
+
+                # Sync all ranks to ensure all parallel uploads have completed
+                if dist.is_initialized():
+                    dist.barrier()
+
+                # Clean up local temporary directory
+                if os.path.exists(local_dir):
+                    try:
+                        shutil.rmtree(local_dir)
+                    except FileNotFoundError:
+                        pass  # Already deleted by another rank on the same node
+                    except Exception as e:
+                        logging.warning(
+                            "Rank %d failed to clean local directory: %s", rank, e
+                        )
+
+                # Final barrier to make sure all ranks finish cleanup before continuing
+                if dist.is_initialized():
+                    dist.barrier()
+
         duration = time.perf_counter() - start_time
 
         # Accumulate checkpointing time to be excluded from step time
@@ -374,7 +474,33 @@ class LoggedModelCheckpoint(ModelCheckpoint):
             filepath,
         )
         start_time = time.perf_counter()
-        super()._remove_checkpoint(trainer, filepath)
+
+        use_dcp = os.getenv("USE_DCP", "false").lower() in ("true", "1", "yes")
+
+        if not use_dcp:
+            super()._remove_checkpoint(trainer, filepath)
+        else:
+            import fsspec
+            import torch.distributed as dist
+
+            # Override to support directory removal (as DCP uses folders)
+            if trainer.global_rank == 0:
+                if filepath.startswith("gs://"):
+                    fs = fsspec.filesystem("gs")
+                    if fs.exists(filepath):
+                        fs.rm(filepath, recursive=True)
+                else:
+                    if os.path.exists(filepath):
+                        if os.path.isdir(filepath):
+                            import shutil
+
+                            shutil.rmtree(filepath)
+                        else:
+                            os.remove(filepath)
+
+            if dist.is_initialized():
+                dist.barrier()
+
         duration = time.perf_counter() - start_time
 
         # Accumulate checkpointing time to be excluded from step time
@@ -593,3 +719,8 @@ if __name__ == "__main__":
 
     trainer.fit(LlamaLitModel(model), train_loader, ckpt_path=checkpoint_load_path)
     logging.info("[INFO] Training Completed.")
+
+    # Flush output streams and force-exit to bypass any hanging background gRPC or communication daemon threads
+    sys.stdout.flush()
+    sys.stderr.flush()
+    os._exit(0)
