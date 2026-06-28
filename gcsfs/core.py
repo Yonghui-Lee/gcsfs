@@ -16,9 +16,7 @@ import warnings
 import weakref
 from datetime import datetime, timedelta
 from glob import has_magic
-from urllib.parse import parse_qs
 from urllib.parse import quote as quote_urllib
-from urllib.parse import urlsplit
 
 import aiohttp
 import fsspec
@@ -163,18 +161,19 @@ def _chunks(lst, n):
 
 def _coalesce_generation(*args):
     """Helper to coalesce a list of object generations down to one."""
-    generations = set(args)
-    if None in generations:
-        generations.remove(None)
-    if len(generations) > 1:
-        raise ValueError(
-            "Cannot coalesce generations where more than one are defined,"
-            f" {generations}"
-        )
-    elif len(generations) == 0:
-        return None
-    else:
-        return generations.pop()
+    res = None
+    for arg in args:
+        if arg is not None:
+            if res is not None and res != arg:
+                generations = set(args)
+                if None in generations:
+                    generations.remove(None)
+                raise ValueError(
+                    "Cannot coalesce generations where more than one are defined,"
+                    f" {generations}"
+                )
+            res = arg
+    return res
 
 
 def _is_directory_marker(entry):
@@ -441,13 +440,20 @@ class GCSFileSystem(DirCacheUpdater, asyn.AsyncFileSystem):
     def _strip_protocol(cls, path):
         if isinstance(path, list):
             return [cls._strip_protocol(p) for p in path]
+
         path = stringify_path(path)
-        protos = (cls.protocol,) if isinstance(cls.protocol, str) else cls.protocol
-        for protocol in protos:
-            if path.startswith(protocol + "://"):
-                path = path[len(protocol) + 3 :]
-            elif path.startswith(protocol + "::"):
-                path = path[len(protocol) + 2 :]
+
+        # Fast path
+        idx = path.find(":")
+        if idx != -1:
+            protocol = path[:idx]
+            protos = (cls.protocol,) if isinstance(cls.protocol, str) else cls.protocol
+            if protocol in protos:
+                if path.startswith("://", idx):
+                    path = path[idx + 3 :]
+                elif path.startswith("::", idx):
+                    path = path[idx + 2 :]
+
         # use of root_marker to make minimum required path, e.g., "/"
         return path or cls.root_marker
 
@@ -2239,31 +2245,51 @@ class GCSFileSystem(DirCacheUpdater, asyn.AsyncFileSystem):
         path = cls._strip_protocol(path).lstrip("/")
         if "/" not in path:
             return path, "", None
+
         bucket, keypart = path.split("/", 1)
-        key = keypart
+
+        if not version_aware:
+            return bucket, keypart, None
+
         generation = None
-        if version_aware:
-            parts = urlsplit(keypart)
+        key = keypart
+
+        hash_idx = keypart.find("#")
+        q_idx = keypart.find("?")
+
+        fragment = None
+        query = None
+
+        if hash_idx != -1:
+            fragment = keypart[hash_idx + 1 :]
+
+        if q_idx != -1:
+            if hash_idx != -1:
+                query = keypart[q_idx + 1 : hash_idx]
+            else:
+                query = keypart[q_idx + 1 :]
+
+        gen_candidate = fragment
+        if not gen_candidate and query:
+            for part in query.split("&"):
+                if part.startswith("generation="):
+                    gen_candidate = part[11:]
+                    break
+
+        if gen_candidate:
             try:
-                if parts.fragment:
-                    generation = parts.fragment
-                elif parts.query:
-                    parsed = parse_qs(parts.query)
-                    if "generation" in parsed:
-                        generation = parsed["generation"][0]
-                # Sanity check whether this could be a valid generation ID. If
-                # it is not, assume that # or ? characters are supposed to be
-                # part of the object name.
-                if generation is not None:
-                    int(generation)
-                    key = parts.path
+                int(gen_candidate)
+                generation = gen_candidate
+                if q_idx != -1 and hash_idx != -1:
+                    key = keypart[: min(q_idx, hash_idx)]
+                elif q_idx != -1:
+                    key = keypart[:q_idx]
+                elif hash_idx != -1:
+                    key = keypart[:hash_idx]
             except ValueError:
-                generation = None
-        return (
-            bucket,
-            key,
-            generation,
-        )
+                pass
+
+        return bucket, key, generation
 
     def split_path(self, path):
         return self._split_path(path, version_aware=self.version_aware)
