@@ -1,0 +1,4 @@
+
+## 2026-06-17 - Micro-optimizing hot path string parsing
+**Learning:** In heavily used virtual filesystem operations, replacing heavy standard library parsers (like `urllib.parse.urlsplit` and `parse_qs`) with naive string `.split()` operations avoids significant regex overhead for simple parsing like URL fragments and queries. Similarly, avoiding `set()` allocations for small lists inside frequently invoked functions like `_coalesce_generation` reduces object creation overhead and improves performance.
+**Action:** When working on hot paths inside filesystem abstractions or network parsers, prefer direct string slicing, splitting, or looping over standard library parsing functions to avoid measurable execution latency, unless complex validation is strictly required. Always verify class generalizations like `cls.protocol` are maintained during refactoring.

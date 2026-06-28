@@ -16,9 +16,7 @@ import warnings
 import weakref
 from datetime import datetime, timedelta
 from glob import has_magic
-from urllib.parse import parse_qs
 from urllib.parse import quote as quote_urllib
-from urllib.parse import urlsplit
 
 import aiohttp
 import fsspec
@@ -163,18 +161,20 @@ def _chunks(lst, n):
 
 def _coalesce_generation(*args):
     """Helper to coalesce a list of object generations down to one."""
-    generations = set(args)
-    if None in generations:
-        generations.remove(None)
-    if len(generations) > 1:
-        raise ValueError(
-            "Cannot coalesce generations where more than one are defined,"
-            f" {generations}"
-        )
-    elif len(generations) == 0:
-        return None
-    else:
-        return generations.pop()
+    res = None
+    for gen in args:
+        if gen is not None:
+            if res is not None and res != gen:
+                # Fallback to original logic for error message
+                generations = set(args)
+                if None in generations:
+                    generations.remove(None)
+                raise ValueError(
+                    "Cannot coalesce generations where more than one are defined,"
+                    f" {generations}"
+                )
+            res = gen
+    return res
 
 
 def _is_directory_marker(entry):
@@ -2243,22 +2243,31 @@ class GCSFileSystem(DirCacheUpdater, asyn.AsyncFileSystem):
         key = keypart
         generation = None
         if version_aware:
-            parts = urlsplit(keypart)
-            try:
-                if parts.fragment:
-                    generation = parts.fragment
-                elif parts.query:
-                    parsed = parse_qs(parts.query)
-                    if "generation" in parsed:
-                        generation = parsed["generation"][0]
-                # Sanity check whether this could be a valid generation ID. If
-                # it is not, assume that # or ? characters are supposed to be
-                # part of the object name.
-                if generation is not None:
-                    int(generation)
-                    key = parts.path
-            except ValueError:
-                generation = None
+            if "#" in keypart or "?" in keypart:
+                try:
+                    if "#" in keypart:
+                        base_and_query, fragment = keypart.split("#", 1)
+                        generation = fragment if fragment else None
+                        key_base = base_and_query.split("?", 1)[0]
+                    else:
+                        key_base, query = keypart.split("?", 1)
+                        for part in query.split("&"):
+                            if part.startswith("generation="):
+                                gen_str = part.split("=", 1)[1] if "=" in part else ""
+                                if "%" in gen_str:
+                                    from urllib.parse import unquote
+
+                                    gen_str = unquote(gen_str)
+                                generation = gen_str
+                                break
+                    # Sanity check whether this could be a valid generation ID. If
+                    # it is not, assume that # or ? characters are supposed to be
+                    # part of the object name.
+                    if generation is not None:
+                        int(generation)
+                        key = key_base
+                except ValueError:
+                    generation = None
         return (
             bucket,
             key,
