@@ -1,0 +1,3 @@
+## 2026-06-29 - [Avoid Workspace Pollution with Binary Test Dependencies]
+**Learning:** Extracting downloaded binaries or tarballs directly in the repository root without checking their contents can accidentally overwrite repository configuration files, create spurious git modifications, and cause the commit to be rejected in code review.
+**Action:** When downloading external testing tools like `fake-gcs-server.tar.gz`, always download and extract them to an isolated, temporary directory like `/tmp/`. Also, ensure all temporary testing scripts and tools are thoroughly cleaned up before submitting.

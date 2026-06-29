@@ -1,8 +1,9 @@
 name: gcsfs_test
 channels:
+  - defaults
   - conda-forge
 dependencies:
-  - python==3.11
+
   - aiohttp
   - build
   - crcmod

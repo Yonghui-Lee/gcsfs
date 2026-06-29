@@ -16,9 +16,7 @@ import warnings
 import weakref
 from datetime import datetime, timedelta
 from glob import has_magic
-from urllib.parse import parse_qs
 from urllib.parse import quote as quote_urllib
-from urllib.parse import urlsplit
 
 import aiohttp
 import fsspec
@@ -2243,22 +2241,44 @@ class GCSFileSystem(DirCacheUpdater, asyn.AsyncFileSystem):
         key = keypart
         generation = None
         if version_aware:
-            parts = urlsplit(keypart)
-            try:
-                if parts.fragment:
-                    generation = parts.fragment
-                elif parts.query:
-                    parsed = parse_qs(parts.query)
-                    if "generation" in parsed:
-                        generation = parsed["generation"][0]
-                # Sanity check whether this could be a valid generation ID. If
-                # it is not, assume that # or ? characters are supposed to be
-                # part of the object name.
-                if generation is not None:
-                    int(generation)
-                    key = parts.path
-            except ValueError:
-                generation = None
+            # Native string operations are faster than urllib.parse.urlsplit and parse_qs
+            # for this hot path.
+            hash_idx = keypart.find("#")
+            if hash_idx != -1:
+                fragment = keypart[hash_idx + 1 :]
+                key_no_frag = keypart[:hash_idx]
+            else:
+                fragment = ""
+                key_no_frag = keypart
+
+            q_idx = key_no_frag.find("?")
+            if q_idx != -1:
+                query = key_no_frag[q_idx + 1 :]
+                path_part = key_no_frag[:q_idx]
+            else:
+                query = ""
+                path_part = key_no_frag
+
+            parsed_generation = None
+            if fragment:
+                parsed_generation = fragment
+            elif query:
+                # Fast parse for generation parameter
+                for param in query.split("&"):
+                    if param.startswith("generation="):
+                        parsed_generation = param[11:]
+                        break
+
+            # Sanity check whether this could be a valid generation ID. If
+            # it is not, assume that # or ? characters are supposed to be
+            # part of the object name.
+            if parsed_generation is not None:
+                try:
+                    int(parsed_generation)
+                    generation = parsed_generation
+                    key = path_part
+                except ValueError:
+                    generation = None
         return (
             bucket,
             key,
