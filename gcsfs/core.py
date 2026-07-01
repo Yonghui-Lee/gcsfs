@@ -16,9 +16,7 @@ import warnings
 import weakref
 from datetime import datetime, timedelta
 from glob import has_magic
-from urllib.parse import parse_qs
 from urllib.parse import quote as quote_urllib
-from urllib.parse import urlsplit
 
 import aiohttp
 import fsspec
@@ -163,18 +161,17 @@ def _chunks(lst, n):
 
 def _coalesce_generation(*args):
     """Helper to coalesce a list of object generations down to one."""
-    generations = set(args)
-    if None in generations:
-        generations.remove(None)
-    if len(generations) > 1:
-        raise ValueError(
-            "Cannot coalesce generations where more than one are defined,"
-            f" {generations}"
-        )
-    elif len(generations) == 0:
-        return None
-    else:
-        return generations.pop()
+    result = None
+    for arg in args:
+        if arg is not None:
+            if result is None:
+                result = arg
+            elif result != arg:
+                raise ValueError(
+                    "Cannot coalesce generations where more than one are defined,"
+                    f" {set(a for a in args if a is not None)}"
+                )
+    return result
 
 
 def _is_directory_marker(entry):
@@ -442,6 +439,8 @@ class GCSFileSystem(DirCacheUpdater, asyn.AsyncFileSystem):
         if isinstance(path, list):
             return [cls._strip_protocol(p) for p in path]
         path = stringify_path(path)
+        if ":" not in path:
+            return path or cls.root_marker
         protos = (cls.protocol,) if isinstance(cls.protocol, str) else cls.protocol
         for protocol in protos:
             if path.startswith(protocol + "://"):
@@ -2243,22 +2242,27 @@ class GCSFileSystem(DirCacheUpdater, asyn.AsyncFileSystem):
         key = keypart
         generation = None
         if version_aware:
-            parts = urlsplit(keypart)
-            try:
-                if parts.fragment:
-                    generation = parts.fragment
-                elif parts.query:
-                    parsed = parse_qs(parts.query)
-                    if "generation" in parsed:
-                        generation = parsed["generation"][0]
-                # Sanity check whether this could be a valid generation ID. If
-                # it is not, assume that # or ? characters are supposed to be
-                # part of the object name.
-                if generation is not None:
-                    int(generation)
-                    key = parts.path
-            except ValueError:
-                generation = None
+            hash_idx = keypart.find("#")
+            if hash_idx != -1:
+                generation_candidate = keypart[hash_idx + 1 :]
+                if generation_candidate.isdigit():
+                    generation = generation_candidate
+                    q_idx = keypart.find("?", 0, hash_idx)
+                    if q_idx != -1:
+                        key = keypart[:q_idx]
+                    else:
+                        key = keypart[:hash_idx]
+            else:
+                q_idx = keypart.find("?")
+                if q_idx != -1:
+                    query = keypart[q_idx + 1 :]
+                    for part in query.split("&"):
+                        if part.startswith("generation="):
+                            generation_candidate = part[11:]
+                            if generation_candidate.isdigit():
+                                generation = generation_candidate
+                                key = keypart[:q_idx]
+                            break
         return (
             bucket,
             key,
