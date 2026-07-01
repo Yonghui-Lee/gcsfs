@@ -73,6 +73,162 @@ logging.basicConfig(
     handlers=[logging.StreamHandler(sys.stdout)],
 )
 
+# ---- GCS File Access Telemetry Monkeypatching ------------------------------
+import threading
+import time
+import gcsfs
+
+telemetry_logger = logging.getLogger("gcsfs_telemetry")
+telemetry_logger.propagate = False  # Prevent logs from leaking to stdout/root logger
+
+# Add a FileHandler to write to a dedicated file
+telemetry_log_path = os.getenv("GCSFS_TELEMETRY_LOG", "/home/yonghuili_google_com/gcsfs/gcsfs_telemetry.log")
+telemetry_dir = os.path.dirname(telemetry_log_path)
+if telemetry_dir:
+    os.makedirs(telemetry_dir, exist_ok=True)
+
+# Use delay=True so file is lazily opened, mode="a" for append
+file_handler = logging.FileHandler(telemetry_log_path, mode="a", delay=True)
+file_handler.setFormatter(logging.Formatter("%(message)s"))  # Raw JSON strings only
+telemetry_logger.addHandler(file_handler)
+telemetry_logger.setLevel(logging.INFO)
+
+class TimedGCSFile:
+    def __init__(self, real_file, path):
+        self.f = real_file
+        self.path = path
+        
+    def read(self, n=-1):
+        start_time = time.time()
+        start_perf = time.perf_counter()
+        try:
+            offset = self.f.tell()
+        except Exception:
+            offset = 0
+        data = self.f.read(n)
+        duration_ms = (time.perf_counter() - start_perf) * 1000
+        actual_length = len(data)
+        pid = os.getpid()
+        tid = threading.get_native_id()
+        # Log structured event
+        telemetry_logger.info(
+            '{"timestamp": "%s", "start_time": %.6f, "duration_ms": %.2f, '
+            '"path": "%s", "offset": %d, "size": %d, "pid": %d, "tid": %d}',
+            time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime(start_time)),
+            start_time,
+            duration_ms,
+            self.path,
+            offset,
+            actual_length,
+            pid,
+            tid,
+        )
+        return data
+
+    def write(self, data):
+        start_time = time.time()
+        start_perf = time.perf_counter()
+        try:
+            offset = self.f.tell()
+        except Exception:
+            offset = 0
+        res = self.f.write(data)
+        duration_ms = (time.perf_counter() - start_perf) * 1000
+        actual_length = len(data)
+        pid = os.getpid()
+        tid = threading.get_native_id()
+        # Log structured event
+        telemetry_logger.info(
+            '{"timestamp": "%s", "start_time": %.6f, "duration_ms": %.2f, '
+            '"path": "%s", "offset": %d, "size": %d, "pid": %d, "tid": %d}',
+            time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime(start_time)),
+            start_time,
+            duration_ms,
+            self.path,
+            offset,
+            actual_length,
+            pid,
+            tid,
+        )
+        return res
+        
+    def seek(self, *args, **kwargs): return self.f.seek(*args, **kwargs)
+    def tell(self): return self.f.tell()
+    def flush(self, *args, **kwargs): return self.f.flush(*args, **kwargs)
+    def close(self): return self.f.close()
+    
+    @property
+    def closed(self): return self.f.closed
+    @property
+    def mode(self): return self.f.mode
+    def readable(self): return getattr(self.f, "readable", lambda: True)()
+    def seekable(self): return getattr(self.f, "seekable", lambda: True)()
+    def writable(self): return getattr(self.f, "writable", lambda: True)()
+    def __enter__(self): return self
+    def __exit__(self, *args): self.close()
+
+original_open = gcsfs.GCSFileSystem.open
+def patched_open(self, path, mode="rb", *args, **kwargs):
+    f = original_open(self, path, mode, *args, **kwargs)
+    if "rb" in mode or "wb" in mode or "ab" in mode:
+        return TimedGCSFile(f, path)
+    return f
+gcsfs.GCSFileSystem.open = patched_open
+
+# Patch GCSFileSystem.pipe to catch the atomic_save (which uses fs.pipe)
+original_pipe = gcsfs.GCSFileSystem.pipe
+def patched_pipe(self, path, value=None, **kwargs):
+    start_time = time.time()
+    start_perf = time.perf_counter()
+    res = original_pipe(self, path, value, **kwargs)
+    duration_ms = (time.perf_counter() - start_perf) * 1000
+    actual_length = len(value) if value is not None else 0
+    pid = os.getpid()
+    tid = threading.get_native_id()
+    # Log structured event
+    telemetry_logger.info(
+        '{"timestamp": "%s", "start_time": %.6f, "duration_ms": %.2f, '
+        '"path": "%s", "offset": %d, "size": %d, "pid": %d, "tid": %d}',
+        time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime(start_time)),
+        start_time,
+        duration_ms,
+        path,
+        0,
+        actual_length,
+        pid,
+        tid,
+    )
+    return res
+gcsfs.GCSFileSystem.pipe = patched_pipe
+
+# Patch _put_file to capture optimized gRPC uploads of DCP shards
+original_put_file = gcsfs.extended_gcsfs.ExtendedGcsFileSystem._put_file
+async def patched_put_file(self, lpath, rpath, *args, **kwargs):
+    start_time = time.time()
+    start_perf = time.perf_counter()
+    res = await original_put_file(self, lpath, rpath, *args, **kwargs)
+    duration_ms = (time.perf_counter() - start_perf) * 1000
+    try:
+        size = os.path.getsize(lpath)
+    except Exception:
+        size = 0
+    pid = os.getpid()
+    tid = threading.get_native_id()
+    telemetry_logger.info(
+        '{"timestamp": "%s", "start_time": %.6f, "duration_ms": %.2f, '
+        '"path": "%s", "offset": %d, "size": %d, "pid": %d, "tid": %d}',
+        time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime(start_time)),
+        start_time,
+        duration_ms,
+        rpath,
+        0,
+        size,
+        pid,
+        tid,
+    )
+    return res
+gcsfs.extended_gcsfs.ExtendedGcsFileSystem._put_file = patched_put_file
+
 # ---- Simulated compute ----------------------------------------------------
 # Per-step stand-in for GPU forward+backward in training_step. Configurable via
 # SIMULATED_STEP_COMPUTE_SECONDS (default 1.0) and recorded in the run summary.
@@ -350,7 +506,30 @@ class LoggedModelCheckpoint(ModelCheckpoint):
         use_dcp = os.getenv("USE_DCP", "false").lower() in ("true", "1", "yes")
 
         if not use_dcp:
-            super()._save_checkpoint(trainer, filepath)
+            if trainer.global_rank == 0:
+                import cProfile
+                import pstats
+                profiler = cProfile.Profile()
+                profiler.enable()
+
+                # ---- BYPASS PYTORCH LIGHTNING ATOMIC SAVE & STREAM DIRECTLY TO GCS (Scenario B) ----
+                logging.info(f"[DIRECT STREAMING] Rank 0 compiling checkpoint dictionary...")
+                checkpoint = trainer._checkpoint_connector.dump_checkpoint(self.save_weights_only)
+                logging.info(f"[DIRECT STREAMING] Rank 0 starting direct torch.save stream to GCS: {filepath}")
+                import fsspec
+                with fsspec.open(filepath, "wb") as f:
+                    torch.save(checkpoint, f)
+                logging.info(f"[DIRECT STREAMING] Rank 0 finished direct torch.save stream")
+
+                profiler.disable()
+                is_sync = os.getenv("GCSFS_ZONAL_FORCE_SYNC_WRITE", "false").lower() in ("true", "1", "yes")
+                prof_filename = "macro_origin.prof" if is_sync else "macro_async_offload.prof"
+                logging.info(f"[PROFILER] Dumping macro-benchmark checkpoint save profile to {prof_filename}")
+                profiler.dump_stats(prof_filename)
+            
+            # Sync across all DDP ranks using the strategy barrier to prevent desynchronization
+            if torch.distributed.is_initialized():
+                trainer.strategy.barrier("checkpoint_direct_streaming_sync")
         else:
             import shutil
 
