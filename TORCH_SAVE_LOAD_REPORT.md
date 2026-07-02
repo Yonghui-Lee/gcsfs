@@ -573,7 +573,69 @@ By separating checkpointing into sharded and replicated partitions, PyTorch DCP 
 
 ---
 
-### D. Checkpoint Sizing & Memory vs. Disk Replication (Why Monolithic and DCP Have the Same Size)
+### D. Official FSDP State Dict Implication
+
+The observed foreign-file reads are not a sign that every process is loading every shard payload. They come from two different mechanisms that remain distinct in an official FSDP + DCP setup:
+
+1. **Archive and DCP metadata reads**: every rank still needs enough checkpoint metadata to map global tensor names and shard coordinates to storage offsets. For PyTorch `.distcp` files, this includes sparse ZIP archive reads such as local header checks and central directory reads.
+2. **Replicated or non-shardable state**: tensors or scalar state that are not represented as sharded state may be saved once in one rank's storage file and then read by all ranks that need that state during restore.
+
+For the manual `dcp_llama_sharded_opt_benchmark.py` benchmark, the sharding rule is intentionally simple: only 2D tensors whose first dimension is divisible by `world_size` are converted to `ShardedTensor`. All other entries, including 1D LayerNorm-style weights and scalar optimizer `step` values, remain normal replicated tensors. DCP then deduplicates those replicated entries and load-balances their placement across `.distcp` files, which explains the small cross-file reads.
+
+The official PyTorch path is to let FSDP own the distributed state-dict layout instead of manually deciding tensor-by-tensor sharding:
+
+```python
+from torch.distributed.fsdp import fully_shard
+from torch.distributed.checkpoint.state_dict import get_state_dict, set_state_dict
+import torch.distributed.checkpoint as dcp
+
+model = fully_shard(model)
+optimizer = torch.optim.AdamW(model.parameters(), lr=...)
+
+model_state_dict, optim_state_dict = get_state_dict(model, optimizer)
+dcp.save(
+    {"model": model_state_dict, "optim": optim_state_dict},
+    checkpoint_id=checkpoint_path,
+)
+```
+
+On load, DCP still requires a pre-allocated model state dict because it uses the destination sharding information to support resharding:
+
+```python
+model = fully_shard(model)
+optimizer = torch.optim.AdamW(model.parameters(), lr=...)
+
+model_state_dict, optim_state_dict = get_state_dict(model, optimizer)
+state = {"model": model_state_dict, "optim": optim_state_dict}
+
+dcp.load(state, checkpoint_id=checkpoint_path)
+set_state_dict(
+    model,
+    optimizer,
+    model_state_dict=state["model"],
+    optim_state_dict=state["optim"],
+)
+```
+
+This should reduce accidental replicated payload compared with the benchmark's manual 2D-only sharding rule. It will not make foreign file access disappear completely. The realistic target for official FSDP is:
+
+| Access Type | Expected Behavior |
+| :--- | :--- |
+| Large parameter and optimizer tensor payload | Read from the rank's own sharded storage assignment |
+| `.metadata` and ZIP archive indexes | May be read by multiple ranks |
+| Scalar state and genuinely replicated/non-shardable entries | May be stored once and read by multiple ranks |
+| Foreign `.distcp` file opens | Expected, but should remain metadata-sized rather than multi-GiB payload reads |
+
+In short: official FSDP can improve the sharding coverage and avoid benchmark-specific replicated tensor artifacts, but DCP's correct behavior is not "zero foreign reads." The correct behavior is "foreign reads are small metadata/control reads, while large tensor payload reads remain local to the assigned shard."
+
+References:
+* PyTorch DCP recipe: `https://docs.pytorch.org/tutorials/recipes/distributed_checkpoint_recipe.html`
+* PyTorch DCP API: `https://docs.pytorch.org/docs/2.12/distributed.checkpoint.html`
+* PyTorch FSDP2 `fully_shard`: `https://docs.pytorch.org/docs/2.12/distributed.fsdp.fully_shard.html`
+
+---
+
+### E. Checkpoint Sizing & Memory vs. Disk Replication (Why Monolithic and DCP Have the Same Size)
 A common point of confusion is why a sharded Distributed Checkpoint (DCP) and a monolithic checkpoint (`torch.save`) have the **exact same total size (~48.18 GB)** on disk, even though **DDP (Distributed Data Parallel) replicates parameters across ranks**.
 * **The Active Memory Replication (DDP in RAM)**:
   During DDP training, the model weights are replicated across your cluster's GPU/CPU spaces. This means every rank process holds a full copy of the model parameters in memory (e.g., on a 4-rank cluster, there are **4 full copies of the 16 GB model** in active RAM, totaling **64 GB** of parameters across processes).
