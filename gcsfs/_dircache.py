@@ -39,6 +39,10 @@ class DirCacheUpdater:
     """
 
     async def _mv_file_cache_update(self, path1, path2, response=None):
+        from .core import invalidate_shared_cache
+
+        invalidate_shared_cache(path1)
+        invalidate_shared_cache(path2)
         self.invalidate_cache(self._parent(path1))
         self.invalidate_cache(self._parent(path2))
 
@@ -48,28 +52,18 @@ class DirCacheUpdater:
         await self._rm_files_cache_update([path])
 
     async def _rm_files_cache_update(self, paths):
+        from .core import invalidate_shared_cache
+
+        for p in paths:
+            invalidate_shared_cache(p)
         parents = set(self._parent(p) for p in paths) | set(paths)
         for parent in parents:
             self.invalidate_cache(parent)
 
     async def _write_file_cache_update(self, path):
-        # A file was created or overwritten at ``path`` (via put/pipe/cp).
-        #
-        # When the immediate parent's listing is already cached, we have listed
-        # it before, so it already exists and adding a file inside it cannot
-        # create a new directory in any ancestor's listing. Invalidate only that
-        # immediate parent so the new file is picked up on its next listing.
-        #
-        # When the parent is not cached, this write may have implicitly created
-        # it (and intermediate directories) -- flat buckets simulate directories
-        # from object prefixes, and HNS buckets auto-create missing parents on
-        # object write. Leaving a cached ancestor untouched would hide the new
-        # directory, so fall back to invalidating the parent and all ancestors.
-        #
-        # Like the rest of this module, this relies on the dircache being
-        # consistent with the bucket (this client is the sole mutator between
-        # listings); concurrent external mutations are reconciled only by
-        # ``invalidate_cache`` / listings expiry, not here.
+        from .core import invalidate_shared_cache
+
+        invalidate_shared_cache(path)
         parent = self._parent(path)
         if parent in self.dircache:
             self.dircache.pop(parent, None)
