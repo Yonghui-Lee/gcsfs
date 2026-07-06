@@ -163,18 +163,19 @@ def _chunks(lst, n):
 
 def _coalesce_generation(*args):
     """Helper to coalesce a list of object generations down to one."""
-    generations = set(args)
-    if None in generations:
-        generations.remove(None)
-    if len(generations) > 1:
-        raise ValueError(
-            "Cannot coalesce generations where more than one are defined,"
-            f" {generations}"
-        )
-    elif len(generations) == 0:
-        return None
-    else:
-        return generations.pop()
+    result = None
+    for arg in args:
+        if arg is not None:
+            if result is not None and result != arg:
+                generations = set(args)
+                if None in generations:
+                    generations.remove(None)
+                raise ValueError(
+                    "Cannot coalesce generations where more than one are defined,"
+                    f" {generations}"
+                )
+            result = arg
+    return result
 
 
 def _is_directory_marker(entry):
@@ -442,6 +443,8 @@ class GCSFileSystem(DirCacheUpdater, asyn.AsyncFileSystem):
         if isinstance(path, list):
             return [cls._strip_protocol(p) for p in path]
         path = stringify_path(path)
+        if ":" not in path:
+            return path.lstrip("/") or cls.root_marker
         protos = (cls.protocol,) if isinstance(cls.protocol, str) else cls.protocol
         for protocol in protos:
             if path.startswith(protocol + "://"):
@@ -449,7 +452,7 @@ class GCSFileSystem(DirCacheUpdater, asyn.AsyncFileSystem):
             elif path.startswith(protocol + "::"):
                 path = path[len(protocol) + 2 :]
         # use of root_marker to make minimum required path, e.g., "/"
-        return path or cls.root_marker
+        return path.lstrip("/") or cls.root_marker
 
     @classmethod
     def _get_kwargs_from_urls(cls, path):
