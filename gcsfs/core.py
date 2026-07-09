@@ -16,9 +16,7 @@ import warnings
 import weakref
 from datetime import datetime, timedelta
 from glob import has_magic
-from urllib.parse import parse_qs
 from urllib.parse import quote as quote_urllib
-from urllib.parse import urlsplit
 
 import aiohttp
 import fsspec
@@ -163,18 +161,19 @@ def _chunks(lst, n):
 
 def _coalesce_generation(*args):
     """Helper to coalesce a list of object generations down to one."""
-    generations = set(args)
-    if None in generations:
-        generations.remove(None)
-    if len(generations) > 1:
-        raise ValueError(
-            "Cannot coalesce generations where more than one are defined,"
-            f" {generations}"
-        )
-    elif len(generations) == 0:
-        return None
-    else:
-        return generations.pop()
+    result = None
+    for arg in args:
+        if arg is not None:
+            if result is not None and result != arg:
+                generations = set(args)
+                if None in generations:
+                    generations.remove(None)
+                raise ValueError(
+                    "Cannot coalesce generations where more than one are defined,"
+                    f" {generations}"
+                )
+            result = arg
+    return result
 
 
 def _is_directory_marker(entry):
@@ -442,6 +441,10 @@ class GCSFileSystem(DirCacheUpdater, asyn.AsyncFileSystem):
         if isinstance(path, list):
             return [cls._strip_protocol(p) for p in path]
         path = stringify_path(path)
+
+        if ":" not in path:
+            return path or cls.root_marker
+
         protos = (cls.protocol,) if isinstance(cls.protocol, str) else cls.protocol
         for protocol in protos:
             if path.startswith(protocol + "://"):
@@ -2243,22 +2246,48 @@ class GCSFileSystem(DirCacheUpdater, asyn.AsyncFileSystem):
         key = keypart
         generation = None
         if version_aware:
-            parts = urlsplit(keypart)
-            try:
-                if parts.fragment:
-                    generation = parts.fragment
-                elif parts.query:
-                    parsed = parse_qs(parts.query)
-                    if "generation" in parsed:
-                        generation = parsed["generation"][0]
-                # Sanity check whether this could be a valid generation ID. If
-                # it is not, assume that # or ? characters are supposed to be
-                # part of the object name.
-                if generation is not None:
+            # Fast path: no generation info possible
+            if "#" not in keypart and "?" not in keypart:
+                return bucket, key, generation
+
+            fragment_idx = keypart.find("#")
+            query_idx = keypart.find("?")
+
+            has_fragment = fragment_idx != -1
+            has_query = query_idx != -1
+
+            if has_fragment and has_query and fragment_idx < query_idx:
+                has_query = False
+
+            fragment = keypart[fragment_idx + 1 :] if has_fragment else ""
+            if has_query:
+                if has_fragment:
+                    query = keypart[query_idx + 1 : fragment_idx]
+                    path_part = keypart[:query_idx]
+                else:
+                    query = keypart[query_idx + 1 :]
+                    path_part = keypart[:query_idx]
+            else:
+                query = ""
+                path_part = keypart[:fragment_idx] if has_fragment else keypart
+
+            if fragment:
+                generation = fragment
+            elif query:
+                gen = None
+                for qs in query.split("&"):
+                    if qs.startswith("generation="):
+                        gen = qs[11:]
+                        break
+                if gen is not None:
+                    generation = gen
+
+            if generation is not None:
+                try:
                     int(generation)
-                    key = parts.path
-            except ValueError:
-                generation = None
+                    key = path_part
+                except ValueError:
+                    generation = None
         return (
             bucket,
             key,

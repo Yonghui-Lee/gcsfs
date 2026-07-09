@@ -1,0 +1,3 @@
+## 2026-07-09 - Standard library URL parsing is slow in hot paths
+**Learning:** Python's standard library `urllib.parse.urlsplit` and `parse_qs` introduce significant overhead when called frequently on hot paths due to string slicing, regex application, and dictionary construction. Replacing these with simple string operations (`find`, `split`, slicing) drastically reduces execution time, especially for basic queries and fragments.
+**Action:** When working on heavily utilized utility functions (like path or URL parsing), evaluate if complex standard library utilities can be substituted with native string methods for measurable speedups. Ensure exact fallback logic is replicated.
