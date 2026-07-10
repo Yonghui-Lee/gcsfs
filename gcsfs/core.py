@@ -16,9 +16,7 @@ import warnings
 import weakref
 from datetime import datetime, timedelta
 from glob import has_magic
-from urllib.parse import parse_qs
 from urllib.parse import quote as quote_urllib
-from urllib.parse import urlsplit
 
 import aiohttp
 import fsspec
@@ -2248,12 +2246,12 @@ class GCSFileSystem(DirCacheUpdater, asyn.AsyncFileSystem):
 
             try:
                 if hash_idx != -1:
-                    generation = keypart[hash_idx + 1:]
-                    int(generation) # triggers ValueError if invalid
+                    generation = keypart[hash_idx + 1 :]
+                    int(generation)  # triggers ValueError if invalid
                     end_idx = q_idx if (q_idx != -1 and q_idx < hash_idx) else hash_idx
                     key = keypart[:end_idx]
                 elif q_idx != -1:
-                    query = keypart[q_idx + 1:]
+                    query = keypart[q_idx + 1 :]
                     if "generation=" in query:
                         for param in query.split("&"):
                             if param.startswith("generation="):
