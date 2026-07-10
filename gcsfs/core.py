@@ -2243,20 +2243,25 @@ class GCSFileSystem(DirCacheUpdater, asyn.AsyncFileSystem):
         key = keypart
         generation = None
         if version_aware:
-            parts = urlsplit(keypart)
+            hash_idx = keypart.find("#")
+            q_idx = keypart.find("?")
+
             try:
-                if parts.fragment:
-                    generation = parts.fragment
-                elif parts.query:
-                    parsed = parse_qs(parts.query)
-                    if "generation" in parsed:
-                        generation = parsed["generation"][0]
-                # Sanity check whether this could be a valid generation ID. If
-                # it is not, assume that # or ? characters are supposed to be
-                # part of the object name.
-                if generation is not None:
-                    int(generation)
-                    key = parts.path
+                if hash_idx != -1:
+                    generation = keypart[hash_idx + 1:]
+                    int(generation) # triggers ValueError if invalid
+                    end_idx = q_idx if (q_idx != -1 and q_idx < hash_idx) else hash_idx
+                    key = keypart[:end_idx]
+                elif q_idx != -1:
+                    query = keypart[q_idx + 1:]
+                    if "generation=" in query:
+                        for param in query.split("&"):
+                            if param.startswith("generation="):
+                                generation = param[11:]
+                                break
+                        if generation is not None:
+                            int(generation)
+                            key = keypart[:q_idx]
             except ValueError:
                 generation = None
         return (
