@@ -16,9 +16,7 @@ import warnings
 import weakref
 from datetime import datetime, timedelta
 from glob import has_magic
-from urllib.parse import parse_qs
 from urllib.parse import quote as quote_urllib
-from urllib.parse import urlsplit
 
 import aiohttp
 import fsspec
@@ -163,18 +161,16 @@ def _chunks(lst, n):
 
 def _coalesce_generation(*args):
     """Helper to coalesce a list of object generations down to one."""
-    generations = set(args)
-    if None in generations:
-        generations.remove(None)
-    if len(generations) > 1:
-        raise ValueError(
-            "Cannot coalesce generations where more than one are defined,"
-            f" {generations}"
-        )
-    elif len(generations) == 0:
-        return None
-    else:
-        return generations.pop()
+    gen = None
+    for arg in args:
+        if arg is not None:
+            if gen is not None and gen != arg:
+                raise ValueError(
+                    "Cannot coalesce generations where more than one are defined,"
+                    f" {set(args)}"
+                )
+            gen = arg
+    return gen
 
 
 def _is_directory_marker(entry):
@@ -442,12 +438,16 @@ class GCSFileSystem(DirCacheUpdater, asyn.AsyncFileSystem):
         if isinstance(path, list):
             return [cls._strip_protocol(p) for p in path]
         path = stringify_path(path)
-        protos = (cls.protocol,) if isinstance(cls.protocol, str) else cls.protocol
-        for protocol in protos:
-            if path.startswith(protocol + "://"):
-                path = path[len(protocol) + 3 :]
-            elif path.startswith(protocol + "::"):
-                path = path[len(protocol) + 2 :]
+
+        if ":" in path:
+            protos = (cls.protocol,) if isinstance(cls.protocol, str) else cls.protocol
+            for protocol in protos:
+                if path.startswith(protocol + "://"):
+                    path = path[len(protocol) + 3 :]
+                    break
+                elif path.startswith(protocol + "::"):
+                    path = path[len(protocol) + 2 :]
+                    break
         # use of root_marker to make minimum required path, e.g., "/"
         return path or cls.root_marker
 
@@ -2243,22 +2243,30 @@ class GCSFileSystem(DirCacheUpdater, asyn.AsyncFileSystem):
         key = keypart
         generation = None
         if version_aware:
-            parts = urlsplit(keypart)
-            try:
-                if parts.fragment:
-                    generation = parts.fragment
-                elif parts.query:
-                    parsed = parse_qs(parts.query)
-                    if "generation" in parsed:
-                        generation = parsed["generation"][0]
-                # Sanity check whether this could be a valid generation ID. If
-                # it is not, assume that # or ? characters are supposed to be
-                # part of the object name.
-                if generation is not None:
-                    int(generation)
-                    key = parts.path
-            except ValueError:
-                generation = None
+            from urllib.parse import unquote
+
+            hash_idx = keypart.find("#")
+            if hash_idx != -1:
+                fragment = keypart[hash_idx + 1 :]
+                if fragment.isdigit() or (
+                    fragment.startswith("-") and fragment[1:].isdigit()
+                ):
+                    generation = fragment
+                    q_idx = keypart.find("?", 0, hash_idx)
+                    key = keypart[:q_idx] if q_idx != -1 else keypart[:hash_idx]
+            else:
+                q_idx = keypart.find("?")
+                if q_idx != -1:
+                    query = keypart[q_idx + 1 :]
+                    for p in query.split("&"):
+                        if p.startswith("generation="):
+                            gen_val = unquote(p[11:])
+                            if gen_val.isdigit() or (
+                                gen_val.startswith("-") and gen_val[1:].isdigit()
+                            ):
+                                generation = gen_val
+                                key = keypart[:q_idx]
+                            break
         return (
             bucket,
             key,

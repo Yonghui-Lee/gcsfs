@@ -1,0 +1,3 @@
+## 2025-02-28 - Optimizing path parsing in GCS file system
+**Learning:** High-level URL parsing functions like `urllib.parse.urlsplit` and `parse_qs` introduce significant overhead when invoked iteratively on high-volume hot paths (like checking every listed object in a GCS bucket). Manual string extraction (`find`, `split`) avoids allocating multiple regex objects and dicts, drastically improving parsing latency.
+**Action:** When a path parser handles restricted, well-known patterns (like a GCS path where `#` and `?` have specific behaviors), use manual string splitting and character indexing (`find`) instead of robust standard-library parsers to cut down object allocation costs on hot paths.
