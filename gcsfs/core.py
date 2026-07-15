@@ -16,9 +16,7 @@ import warnings
 import weakref
 from datetime import datetime, timedelta
 from glob import has_magic
-from urllib.parse import parse_qs
 from urllib.parse import quote as quote_urllib
-from urllib.parse import urlsplit
 
 import aiohttp
 import fsspec
@@ -2243,20 +2241,42 @@ class GCSFileSystem(DirCacheUpdater, asyn.AsyncFileSystem):
         key = keypart
         generation = None
         if version_aware:
-            parts = urlsplit(keypart)
+            hash_idx = keypart.find("#")
+            query_idx = keypart.find("?")
+
+            if hash_idx != -1 and (query_idx == -1 or hash_idx < query_idx):
+                fragment = keypart[hash_idx + 1 :]
+                query = ""
+                _path = keypart[:hash_idx]
+            else:
+                if hash_idx != -1:
+                    fragment = keypart[hash_idx + 1 :]
+                    query = keypart[query_idx + 1 : hash_idx]
+                    _path = keypart[:query_idx]
+                else:
+                    fragment = ""
+                    if query_idx != -1:
+                        query = keypart[query_idx + 1 :]
+                        _path = keypart[:query_idx]
+                    else:
+                        query = ""
+                        _path = keypart
+
             try:
-                if parts.fragment:
-                    generation = parts.fragment
-                elif parts.query:
-                    parsed = parse_qs(parts.query)
-                    if "generation" in parsed:
-                        generation = parsed["generation"][0]
+                if fragment:
+                    generation = fragment
+                elif query:
+                    for param in query.split("&"):
+                        if param.startswith("generation="):
+                            generation = param[11:]
+                            break
+
                 # Sanity check whether this could be a valid generation ID. If
                 # it is not, assume that # or ? characters are supposed to be
                 # part of the object name.
                 if generation is not None:
                     int(generation)
-                    key = parts.path
+                    key = _path
             except ValueError:
                 generation = None
         return (
