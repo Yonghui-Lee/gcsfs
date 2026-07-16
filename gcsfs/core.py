@@ -16,9 +16,7 @@ import warnings
 import weakref
 from datetime import datetime, timedelta
 from glob import has_magic
-from urllib.parse import parse_qs
 from urllib.parse import quote as quote_urllib
-from urllib.parse import urlsplit
 
 import aiohttp
 import fsspec
@@ -2243,22 +2241,47 @@ class GCSFileSystem(DirCacheUpdater, asyn.AsyncFileSystem):
         key = keypart
         generation = None
         if version_aware:
-            parts = urlsplit(keypart)
-            try:
-                if parts.fragment:
-                    generation = parts.fragment
-                elif parts.query:
-                    parsed = parse_qs(parts.query)
-                    if "generation" in parsed:
-                        generation = parsed["generation"][0]
-                # Sanity check whether this could be a valid generation ID. If
-                # it is not, assume that # or ? characters are supposed to be
-                # part of the object name.
-                if generation is not None:
-                    int(generation)
-                    key = parts.path
-            except ValueError:
-                generation = None
+            hash_idx = keypart.find("#")
+            query_idx = keypart.find("?")
+
+            if hash_idx != -1 and (query_idx == -1 or hash_idx < query_idx):
+                fragment = keypart[hash_idx + 1 :]
+                if fragment:
+                    try:
+                        int(fragment)
+                        key = keypart[:hash_idx]
+                        generation = fragment
+                    except ValueError:
+                        pass
+            elif query_idx != -1:
+                if hash_idx != -1:
+                    fragment = keypart[hash_idx + 1 :]
+                    query = keypart[query_idx + 1 : hash_idx]
+                else:
+                    fragment = ""
+                    query = keypart[query_idx + 1 :]
+
+                if fragment:
+                    try:
+                        int(fragment)
+                        key = keypart[:query_idx]
+                        generation = fragment
+                    except ValueError:
+                        pass
+                elif query:
+                    parsed_gen = None
+                    for part in query.split("&"):
+                        if part.startswith("generation="):
+                            parsed_gen = part[11:]
+                            break
+
+                    if parsed_gen is not None:
+                        try:
+                            int(parsed_gen)
+                            key = keypart[:query_idx]
+                            generation = parsed_gen
+                        except ValueError:
+                            pass
         return (
             bucket,
             key,
