@@ -163,18 +163,22 @@ def _chunks(lst, n):
 
 def _coalesce_generation(*args):
     """Helper to coalesce a list of object generations down to one."""
-    generations = set(args)
-    if None in generations:
-        generations.remove(None)
-    if len(generations) > 1:
-        raise ValueError(
-            "Cannot coalesce generations where more than one are defined,"
-            f" {generations}"
-        )
-    elif len(generations) == 0:
-        return None
-    else:
-        return generations.pop()
+    # ⚡ Bolt Optimization: Fast-path iteration avoids set() instantiation
+    # and .remove() method overhead on hot paths for path operations.
+    gen = None
+    for arg in args:
+        if arg is not None:
+            if gen is not None and gen != arg:
+                # Reconstruct original set format strictly for the error message
+                generations = set(args)
+                if None in generations:
+                    generations.remove(None)
+                raise ValueError(
+                    "Cannot coalesce generations where more than one are defined,"
+                    f" {generations}"
+                )
+            gen = arg
+    return gen
 
 
 def _is_directory_marker(entry):
