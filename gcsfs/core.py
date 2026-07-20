@@ -16,9 +16,7 @@ import warnings
 import weakref
 from datetime import datetime, timedelta
 from glob import has_magic
-from urllib.parse import parse_qs
 from urllib.parse import quote as quote_urllib
-from urllib.parse import urlsplit
 
 import aiohttp
 import fsspec
@@ -2243,22 +2241,45 @@ class GCSFileSystem(DirCacheUpdater, asyn.AsyncFileSystem):
         key = keypart
         generation = None
         if version_aware:
-            parts = urlsplit(keypart)
+            hash_idx = keypart.find("#")
+            if hash_idx != -1:
+                q_idx = keypart.find("?", 0, hash_idx)
+                if q_idx != -1:
+                    frag_val = keypart[hash_idx + 1 :]
+                    query_val = keypart[q_idx + 1 : hash_idx]
+                    path_part = keypart[:q_idx]
+                else:
+                    frag_val = keypart[hash_idx + 1 :]
+                    query_val = None
+                    path_part = keypart[:hash_idx]
+            else:
+                q_idx = keypart.find("?")
+                if q_idx != -1:
+                    frag_val = None
+                    query_val = keypart[q_idx + 1 :]
+                    path_part = keypart[:q_idx]
+                else:
+                    return bucket, key, None
+
             try:
-                if parts.fragment:
-                    generation = parts.fragment
-                elif parts.query:
-                    parsed = parse_qs(parts.query)
-                    if "generation" in parsed:
-                        generation = parsed["generation"][0]
+                if frag_val:
+                    generation = frag_val
+                elif query_val:
+                    parts = query_val.split("&")
+                    for p in parts:
+                        if p.startswith("generation="):
+                            generation = p[11:]
+                            break
+
                 # Sanity check whether this could be a valid generation ID. If
                 # it is not, assume that # or ? characters are supposed to be
                 # part of the object name.
                 if generation is not None:
                     int(generation)
-                    key = parts.path
+                    key = path_part
             except ValueError:
                 generation = None
+
         return (
             bucket,
             key,
