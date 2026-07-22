@@ -1,0 +1,3 @@
+## 2026-07-22 - Optimize _coalesce_generation using loop
+**Learning:** Python `set()` instantiations and `.remove()` operations incur measurable overhead when called frequently on short parameter lists (e.g. `_coalesce_generation` in path merging). For these hot paths, iterating natively over arguments is significantly faster and doesn't allocate additional containers on the happy path.
+**Action:** Use simple native loops over `set()` operations in frequently-invoked helper functions unless the operation is truly set-like (e.g., uniqueness over a large collection). Construct sets inside error-handling blocks only if necessary for exact exception string preservation.
