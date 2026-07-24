@@ -16,9 +16,7 @@ import warnings
 import weakref
 from datetime import datetime, timedelta
 from glob import has_magic
-from urllib.parse import parse_qs
 from urllib.parse import quote as quote_urllib
-from urllib.parse import urlsplit
 
 import aiohttp
 import fsspec
@@ -163,18 +161,18 @@ def _chunks(lst, n):
 
 def _coalesce_generation(*args):
     """Helper to coalesce a list of object generations down to one."""
-    generations = set(args)
-    if None in generations:
-        generations.remove(None)
-    if len(generations) > 1:
-        raise ValueError(
-            "Cannot coalesce generations where more than one are defined,"
-            f" {generations}"
-        )
-    elif len(generations) == 0:
-        return None
-    else:
-        return generations.pop()
+    ans = None
+    for arg in args:
+        if arg is not None:
+            if ans is None:
+                ans = arg
+            elif ans != arg:
+                generations = set(a for a in args if a is not None)
+                raise ValueError(
+                    "Cannot coalesce generations where more than one are defined,"
+                    f" {generations}"
+                )
+    return ans
 
 
 def _is_directory_marker(entry):
@@ -2243,22 +2241,33 @@ class GCSFileSystem(DirCacheUpdater, asyn.AsyncFileSystem):
         key = keypart
         generation = None
         if version_aware:
-            parts = urlsplit(keypart)
-            try:
-                if parts.fragment:
-                    generation = parts.fragment
-                elif parts.query:
-                    parsed = parse_qs(parts.query)
-                    if "generation" in parsed:
-                        generation = parsed["generation"][0]
-                # Sanity check whether this could be a valid generation ID. If
-                # it is not, assume that # or ? characters are supposed to be
-                # part of the object name.
-                if generation is not None:
-                    int(generation)
-                    key = parts.path
-            except ValueError:
-                generation = None
+            hash_idx = keypart.find("#")
+            q_idx = keypart.find("?")
+
+            if hash_idx != -1:
+                fragment = keypart[hash_idx + 1 :]
+                try:
+                    int(fragment)
+                    generation = fragment
+                    if q_idx != -1 and q_idx < hash_idx:
+                        key = keypart[:q_idx]
+                    else:
+                        key = keypart[:hash_idx]
+                except ValueError:
+                    pass
+            elif q_idx != -1:
+                query = keypart[q_idx + 1 :]
+                for param in query.split("&"):
+                    if param.startswith("generation="):
+                        val = param.split("=", 1)[1]
+                        try:
+                            int(val)
+                            generation = val
+                            key = keypart[:q_idx]
+                        except ValueError:
+                            pass
+                        break
+
         return (
             bucket,
             key,
