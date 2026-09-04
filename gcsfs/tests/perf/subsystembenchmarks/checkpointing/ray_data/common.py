@@ -118,7 +118,6 @@ def load_benchmark_model(params):
             torch_dtype=torch.bfloat16,
             local_files_only=use_local_files_only,
             use_cache=False,
-            low_cpu_mem_usage=True,
         )
     else:
         payload = DummyTransformer()
