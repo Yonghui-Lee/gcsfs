@@ -219,6 +219,20 @@ def _pyarrow_fs_copy_files(
     )
 
 
+def _get_staging_dir(prefix: str) -> str:
+    """Creates a temporary staging directory, prioritizing /dev/shm or /mnt/ramdisk to avoid root disk exhaustion."""
+    for candidate in ("/mnt/ramdisk", "/dev/shm"):
+        if os.path.isdir(candidate) and os.access(candidate, os.W_OK):
+            try:
+                stat = os.statvfs(candidate)
+                avail_gb = (stat.f_bavail * stat.f_frsize) / (1024**3)
+                if avail_gb >= 10:
+                    return tempfile.mkdtemp(prefix=prefix, dir=candidate)
+            except Exception:
+                pass
+    return tempfile.mkdtemp(prefix=prefix)
+
+
 @ray.remote
 class RayCheckpointWorker:
     """Ray Actor executing distributed checkpoint operations on CPU."""
@@ -262,14 +276,16 @@ class RayCheckpointWorker:
 
             local_dir = None
             try:
+                # get_state_dict is a collective operation across all ranks for distributed strategies
+                model_state, opt_state = get_state_dict(
+                    self.model, self.optimizer, options=options
+                )
+                app_state = {"model": model_state, "optimizer": opt_state}
+
                 if is_sharded:
-                    local_dir = tempfile.mkdtemp(
-                        prefix=f"ray-ckpt-r{round_idx}-rank{self.rank}-"
+                    local_dir = _get_staging_dir(
+                        f"ray-ckpt-r{round_idx}-rank{self.rank}-"
                     )
-                    model_state, opt_state = get_state_dict(
-                        self.model, self.optimizer, options=options
-                    )
-                    app_state = {"model": model_state, "optimizer": opt_state}
                     dcp.save(
                         {"app": app_state},
                         storage_writer=dcp.FileSystemWriter(local_dir),
@@ -285,13 +301,7 @@ class RayCheckpointWorker:
                     )
                 else:
                     if self.rank == 0:
-                        local_dir = tempfile.mkdtemp(
-                            prefix=f"ray-ckpt-r{round_idx}-rank0-"
-                        )
-                        model_state, opt_state = get_state_dict(
-                            self.model, self.optimizer, options=options
-                        )
-                        app_state = {"model": model_state, "optimizer": opt_state}
+                        local_dir = _get_staging_dir(f"ray-ckpt-r{round_idx}-rank0-")
                         ckpt_file = os.path.join(local_dir, "checkpoint.pt")
                         torch.save(app_state, ckpt_file)
 
@@ -302,6 +312,7 @@ class RayCheckpointWorker:
                             destination_filesystem=self.arrow_fs,
                         )
 
+                del app_state, model_state, opt_state
                 dist.barrier()
                 t_end = time.perf_counter()
                 durations.append((t_start, t_end))
