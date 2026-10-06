@@ -1,0 +1,326 @@
+[
+  {
+    "bucket_type": "regional",
+    "backend": "gcsfs_no_cache",
+    "batch_format": "pyarrow",
+    "mode": "streaming",
+    "ray_concurrency": 8,
+    "num_files": 256,
+    "total_mb": 65169.19298362732,
+    "runs": [
+      {
+        "duration_s": 128.73174802027643,
+        "throughput_mib_s": 506.240255304873
+      },
+      {
+        "duration_s": 104.4318313729018,
+        "throughput_mib_s": 624.0357190608223
+      }
+    ],
+    "mean_throughput_mib_s": 565.1379871828476,
+    "median_throughput_mib_s": 565.1379871828476,
+    "min_throughput_mib_s": 506.240255304873,
+    "max_throughput_mib_s": 624.0357190608223,
+    "stdev_throughput_mib_s": 83.29397121484593,
+    "mean_duration_s": 116.58178969658911,
+    "per_worker_mib_s": 70.64224839785595,
+    "dataset": "hf-pile-deduplicated"
+  },
+  {
+    "bucket_type": "regional",
+    "backend": "gcsfs",
+    "batch_format": "pyarrow",
+    "mode": "streaming",
+    "ray_concurrency": 8,
+    "num_files": 256,
+    "total_mb": 65169.19298362732,
+    "runs": [
+      {
+        "duration_s": 95.09828281961381,
+        "throughput_mib_s": 685.2825419281526
+      },
+      {
+        "duration_s": 91.92382851801813,
+        "throughput_mib_s": 708.9477672359285
+      }
+    ],
+    "mean_throughput_mib_s": 697.1151545820405,
+    "median_throughput_mib_s": 697.1151545820405,
+    "min_throughput_mib_s": 685.2825419281526,
+    "max_throughput_mib_s": 708.9477672359285,
+    "stdev_throughput_mib_s": 16.73384129343586,
+    "mean_duration_s": 93.51105566881597,
+    "per_worker_mib_s": 87.13939432275507,
+    "dataset": "hf-pile-deduplicated"
+  },
+  {
+    "bucket_type": "regional",
+    "backend": "gcsfs_no_prefetch",
+    "batch_format": "pyarrow",
+    "mode": "streaming",
+    "ray_concurrency": 8,
+    "num_files": 256,
+    "total_mb": 65169.19298362732,
+    "runs": [
+      {
+        "duration_s": 103.6026492509991,
+        "throughput_mib_s": 629.0301788107881
+      },
+      {
+        "duration_s": 87.81510589458048,
+        "throughput_mib_s": 742.1182531153702
+      }
+    ],
+    "mean_throughput_mib_s": 685.5742159630792,
+    "median_throughput_mib_s": 685.5742159630792,
+    "min_throughput_mib_s": 629.0301788107881,
+    "max_throughput_mib_s": 742.1182531153702,
+    "stdev_throughput_mib_s": 79.96534421209813,
+    "mean_duration_s": 95.70887757278979,
+    "per_worker_mib_s": 85.6967769953849,
+    "dataset": "hf-pile-deduplicated"
+  },
+  {
+    "bucket_type": "regional",
+    "backend": "cpp",
+    "batch_format": "pyarrow",
+    "mode": "streaming",
+    "ray_concurrency": 8,
+    "num_files": 256,
+    "total_mb": 65169.19298362732,
+    "runs": [
+      {
+        "duration_s": 74.50326225161552,
+        "throughput_mib_s": 874.715965638326
+      },
+      {
+        "duration_s": 70.40516464971006,
+        "throughput_mib_s": 925.6308583023206
+      }
+    ],
+    "mean_throughput_mib_s": 900.1734119703233,
+    "median_throughput_mib_s": 900.1734119703233,
+    "min_throughput_mib_s": 874.715965638326,
+    "max_throughput_mib_s": 925.6308583023206,
+    "stdev_throughput_mib_s": 36.00226586609577,
+    "mean_duration_s": 72.45421345066279,
+    "per_worker_mib_s": 112.52167649629041,
+    "dataset": "hf-pile-deduplicated"
+  },
+  {
+    "bucket_type": "regional",
+    "backend": "gcsfs_no_cache",
+    "batch_format": "pyarrow",
+    "mode": "streaming",
+    "ray_concurrency": 16,
+    "num_files": 256,
+    "total_mb": 65169.19298362732,
+    "runs": [
+      {
+        "duration_s": 43.76757576689124,
+        "throughput_mib_s": 1488.9833819154705
+      },
+      {
+        "duration_s": 44.233344446867704,
+        "throughput_mib_s": 1473.3046709119492
+      }
+    ],
+    "mean_throughput_mib_s": 1481.14402641371,
+    "median_throughput_mib_s": 1481.14402641371,
+    "min_throughput_mib_s": 1473.3046709119492,
+    "max_throughput_mib_s": 1488.9833819154705,
+    "stdev_throughput_mib_s": 11.086522870854091,
+    "mean_duration_s": 44.00046010687947,
+    "per_worker_mib_s": 92.57150165085687,
+    "dataset": "hf-pile-deduplicated"
+  },
+  {
+    "bucket_type": "regional",
+    "backend": "gcsfs",
+    "batch_format": "pyarrow",
+    "mode": "streaming",
+    "ray_concurrency": 16,
+    "num_files": 256,
+    "total_mb": 65169.19298362732,
+    "runs": [
+      {
+        "duration_s": 43.67325762659311,
+        "throughput_mib_s": 1492.1990372420742
+      },
+      {
+        "duration_s": 44.05348147638142,
+        "throughput_mib_s": 1479.3199265889293
+      }
+    ],
+    "mean_throughput_mib_s": 1485.7594819155017,
+    "median_throughput_mib_s": 1485.7594819155017,
+    "min_throughput_mib_s": 1479.3199265889293,
+    "max_throughput_mib_s": 1492.1990372420742,
+    "stdev_throughput_mib_s": 9.106906478490618,
+    "mean_duration_s": 43.86336955148727,
+    "per_worker_mib_s": 92.85996761971886,
+    "dataset": "hf-pile-deduplicated"
+  },
+  {
+    "bucket_type": "regional",
+    "backend": "gcsfs_no_prefetch",
+    "batch_format": "pyarrow",
+    "mode": "streaming",
+    "ray_concurrency": 16,
+    "num_files": 256,
+    "total_mb": 65169.19298362732,
+    "runs": [
+      {
+        "duration_s": 47.81250324845314,
+        "throughput_mib_s": 1363.0157083594177
+      },
+      {
+        "duration_s": 46.51329733803868,
+        "throughput_mib_s": 1401.0873602446543
+      }
+    ],
+    "mean_throughput_mib_s": 1382.051534302036,
+    "median_throughput_mib_s": 1382.051534302036,
+    "min_throughput_mib_s": 1363.0157083594177,
+    "max_throughput_mib_s": 1401.0873602446543,
+    "stdev_throughput_mib_s": 26.92072321902443,
+    "mean_duration_s": 47.16290029324591,
+    "per_worker_mib_s": 86.37822089387726,
+    "dataset": "hf-pile-deduplicated"
+  },
+  {
+    "bucket_type": "regional",
+    "backend": "cpp",
+    "batch_format": "pyarrow",
+    "mode": "streaming",
+    "ray_concurrency": 16,
+    "num_files": 256,
+    "total_mb": 65169.19298362732,
+    "runs": [
+      {
+        "duration_s": 37.823949951678514,
+        "throughput_mib_s": 1722.961062154623
+      },
+      {
+        "duration_s": 39.48942017741501,
+        "throughput_mib_s": 1650.2950078993363
+      }
+    ],
+    "mean_throughput_mib_s": 1686.6280350269797,
+    "median_throughput_mib_s": 1686.6280350269797,
+    "min_throughput_mib_s": 1650.2950078993363,
+    "max_throughput_mib_s": 1722.961062154623,
+    "stdev_throughput_mib_s": 51.38265972598286,
+    "mean_duration_s": 38.656685064546764,
+    "per_worker_mib_s": 105.41425218918623,
+    "dataset": "hf-pile-deduplicated"
+  },
+  {
+    "bucket_type": "regional",
+    "backend": "gcsfs_no_cache",
+    "batch_format": "pyarrow",
+    "mode": "streaming",
+    "ray_concurrency": 32,
+    "num_files": 256,
+    "total_mb": 65169.19298362732,
+    "runs": [
+      {
+        "duration_s": 23.998892741277814,
+        "throughput_mib_s": 2715.5083230793007
+      },
+      {
+        "duration_s": 23.71560550481081,
+        "throughput_mib_s": 2747.945565649061
+      }
+    ],
+    "mean_throughput_mib_s": 2731.726944364181,
+    "median_throughput_mib_s": 2731.726944364181,
+    "min_throughput_mib_s": 2715.5083230793007,
+    "max_throughput_mib_s": 2747.945565649061,
+    "stdev_throughput_mib_s": 22.93659418407039,
+    "mean_duration_s": 23.857249123044312,
+    "per_worker_mib_s": 85.36646701138065,
+    "dataset": "hf-pile-deduplicated"
+  },
+  {
+    "bucket_type": "regional",
+    "backend": "gcsfs",
+    "batch_format": "pyarrow",
+    "mode": "streaming",
+    "ray_concurrency": 32,
+    "num_files": 256,
+    "total_mb": 65169.19298362732,
+    "runs": [
+      {
+        "duration_s": 23.58868243917823,
+        "throughput_mib_s": 2762.7313713541034
+      },
+      {
+        "duration_s": 22.637479988858104,
+        "throughput_mib_s": 2878.8183585674205
+      }
+    ],
+    "mean_throughput_mib_s": 2820.774864960762,
+    "median_throughput_mib_s": 2820.774864960762,
+    "min_throughput_mib_s": 2762.7313713541034,
+    "max_throughput_mib_s": 2878.8183585674205,
+    "stdev_throughput_mib_s": 82.08589586605257,
+    "mean_duration_s": 23.113081214018166,
+    "per_worker_mib_s": 88.14921453002381,
+    "dataset": "hf-pile-deduplicated"
+  },
+  {
+    "bucket_type": "regional",
+    "backend": "gcsfs_no_prefetch",
+    "batch_format": "pyarrow",
+    "mode": "streaming",
+    "ray_concurrency": 32,
+    "num_files": 256,
+    "total_mb": 65169.19298362732,
+    "runs": [
+      {
+        "duration_s": 25.230567779392004,
+        "throughput_mib_s": 2582.9459548213836
+      },
+      {
+        "duration_s": 23.7500636074692,
+        "throughput_mib_s": 2743.958671467816
+      }
+    ],
+    "mean_throughput_mib_s": 2663.4523131446,
+    "median_throughput_mib_s": 2663.4523131446,
+    "min_throughput_mib_s": 2582.9459548213836,
+    "max_throughput_mib_s": 2743.958671467816,
+    "stdev_throughput_mib_s": 113.85318379796063,
+    "mean_duration_s": 24.490315693430603,
+    "per_worker_mib_s": 83.23288478576875,
+    "dataset": "hf-pile-deduplicated"
+  },
+  {
+    "bucket_type": "regional",
+    "backend": "cpp",
+    "batch_format": "pyarrow",
+    "mode": "streaming",
+    "ray_concurrency": 32,
+    "num_files": 256,
+    "total_mb": 65169.19298362732,
+    "runs": [
+      {
+        "duration_s": 34.79226664826274,
+        "throughput_mib_s": 1873.0942034465402
+      },
+      {
+        "duration_s": 21.733700985088944,
+        "throughput_mib_s": 2998.5317746084106
+      }
+    ],
+    "mean_throughput_mib_s": 2435.8129890274754,
+    "median_throughput_mib_s": 2435.8129890274754,
+    "min_throughput_mib_s": 1873.0942034465402,
+    "max_throughput_mib_s": 2998.5317746084106,
+    "stdev_throughput_mib_s": 795.8045383706763,
+    "mean_duration_s": 28.262983816675842,
+    "per_worker_mib_s": 76.1191559071086,
+    "dataset": "hf-pile-deduplicated"
+  }
+]

@@ -1,0 +1,202 @@
+[
+  {
+    "backend": "gcsfs_no_cache",
+    "concurrency": 8,
+    "num_files": 8,
+    "total_mib": 7943.878288269043,
+    "runs": [
+      {
+        "duration_s": 3.203956715762615,
+        "throughput_mib_s": 2479.396256880523
+      },
+      {
+        "duration_s": 2.930146787315607,
+        "throughput_mib_s": 2711.085438674102
+      },
+      {
+        "duration_s": 2.8409975469112396,
+        "throughput_mib_s": 2796.158094858514
+      }
+    ],
+    "mean_throughput_mib_s": 2662.2132634710465,
+    "median_throughput_mib_s": 2711.085438674102,
+    "min_throughput_mib_s": 2479.396256880523,
+    "max_throughput_mib_s": 2796.158094858514,
+    "stdev_throughput_mib_s": 163.93865508661256
+  },
+  {
+    "backend": "gcsfs_prefetch_on",
+    "concurrency": 8,
+    "num_files": 8,
+    "total_mib": 7943.878288269043,
+    "runs": [
+      {
+        "duration_s": 3.0067761950194836,
+        "throughput_mib_s": 2641.991878686391
+      },
+      {
+        "duration_s": 2.9067058917135,
+        "throughput_mib_s": 2732.948768884951
+      },
+      {
+        "duration_s": 2.8653803188353777,
+        "throughput_mib_s": 2772.364365054968
+      }
+    ],
+    "mean_throughput_mib_s": 2715.7683375421034,
+    "median_throughput_mib_s": 2732.948768884951,
+    "min_throughput_mib_s": 2641.991878686391,
+    "max_throughput_mib_s": 2772.364365054968,
+    "stdev_throughput_mib_s": 66.8627079643498
+  },
+  {
+    "backend": "gcsfs_readahead",
+    "concurrency": 8,
+    "num_files": 8,
+    "total_mib": 7943.878288269043,
+    "runs": [
+      {
+        "duration_s": 3.623025057837367,
+        "throughput_mib_s": 2192.6092592389773
+      },
+      {
+        "duration_s": 3.349314281716943,
+        "throughput_mib_s": 2371.7924387187727
+      },
+      {
+        "duration_s": 3.941755536943674,
+        "throughput_mib_s": 2015.3148042327612
+      }
+    ],
+    "mean_throughput_mib_s": 2193.238834063504,
+    "median_throughput_mib_s": 2192.6092592389773,
+    "min_throughput_mib_s": 2015.3148042327612,
+    "max_throughput_mib_s": 2371.7924387187727,
+    "stdev_throughput_mib_s": 178.2396511596967
+  },
+  {
+    "backend": "pyarrow_cpp",
+    "concurrency": 8,
+    "num_files": 8,
+    "total_mib": 7943.878288269043,
+    "runs": [
+      {
+        "duration_s": 7.413564642891288,
+        "throughput_mib_s": 1071.5328820780246
+      },
+      {
+        "duration_s": 6.628898235037923,
+        "throughput_mib_s": 1198.3708312613126
+      },
+      {
+        "duration_s": 7.291942669078708,
+        "throughput_mib_s": 1089.4049293550881
+      }
+    ],
+    "mean_throughput_mib_s": 1119.7695475648084,
+    "median_throughput_mib_s": 1089.4049293550881,
+    "min_throughput_mib_s": 1071.5328820780246,
+    "max_throughput_mib_s": 1198.3708312613126,
+    "stdev_throughput_mib_s": 68.65474395496747
+  },
+  {
+    "backend": "gcsfs_no_cache",
+    "concurrency": 16,
+    "num_files": 8,
+    "total_mib": 7943.878288269043,
+    "runs": [
+      {
+        "duration_s": 3.062287535518408,
+        "throughput_mib_s": 2594.099409716025
+      },
+      {
+        "duration_s": 3.182934772223234,
+        "throughput_mib_s": 2495.7716248518527
+      },
+      {
+        "duration_s": 3.0301593989133835,
+        "throughput_mib_s": 2621.604094859736
+      }
+    ],
+    "mean_throughput_mib_s": 2570.4917098092046,
+    "median_throughput_mib_s": 2594.099409716025,
+    "min_throughput_mib_s": 2495.7716248518527,
+    "max_throughput_mib_s": 2621.604094859736,
+    "stdev_throughput_mib_s": 66.15470692429287
+  },
+  {
+    "backend": "gcsfs_prefetch_on",
+    "concurrency": 16,
+    "num_files": 8,
+    "total_mib": 7943.878288269043,
+    "runs": [
+      {
+        "duration_s": 2.8681862577795982,
+        "throughput_mib_s": 2769.652168412097
+      },
+      {
+        "duration_s": 3.424293003976345,
+        "throughput_mib_s": 2319.859392594174
+      },
+      {
+        "duration_s": 2.8914490677416325,
+        "throughput_mib_s": 2747.3692609337963
+      }
+    ],
+    "mean_throughput_mib_s": 2612.293607313356,
+    "median_throughput_mib_s": 2747.3692609337963,
+    "min_throughput_mib_s": 2319.859392594174,
+    "max_throughput_mib_s": 2769.652168412097,
+    "stdev_throughput_mib_s": 253.50041310664565
+  },
+  {
+    "backend": "gcsfs_readahead",
+    "concurrency": 16,
+    "num_files": 8,
+    "total_mib": 7943.878288269043,
+    "runs": [
+      {
+        "duration_s": 4.115327745676041,
+        "throughput_mib_s": 1930.314856846006
+      },
+      {
+        "duration_s": 4.05508884228766,
+        "throughput_mib_s": 1958.989949968036
+      },
+      {
+        "duration_s": 3.4754803217947483,
+        "throughput_mib_s": 2285.6922073340356
+      }
+    ],
+    "mean_throughput_mib_s": 2058.3323380493594,
+    "median_throughput_mib_s": 1958.989949968036,
+    "min_throughput_mib_s": 1930.314856846006,
+    "max_throughput_mib_s": 2285.6922073340356,
+    "stdev_throughput_mib_s": 197.420738176738
+  },
+  {
+    "backend": "pyarrow_cpp",
+    "concurrency": 16,
+    "num_files": 8,
+    "total_mib": 7943.878288269043,
+    "runs": [
+      {
+        "duration_s": 9.48144305497408,
+        "throughput_mib_s": 837.8343087871617
+      },
+      {
+        "duration_s": 7.2069654148072,
+        "throughput_mib_s": 1102.250091550017
+      },
+      {
+        "duration_s": 5.97686904668808,
+        "throughput_mib_s": 1329.1036203429835
+      }
+    ],
+    "mean_throughput_mib_s": 1089.7293402267208,
+    "median_throughput_mib_s": 1102.250091550017,
+    "min_throughput_mib_s": 837.8343087871617,
+    "max_throughput_mib_s": 1329.1036203429835,
+    "stdev_throughput_mib_s": 245.87387219753066
+  }
+]

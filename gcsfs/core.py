@@ -2480,7 +2480,8 @@ def _get_prefetcher_and_cache_config(cache_type, kwargs):
                 "true",
                 "1",
             )
-        cache_type = "none" if use_prefetch_reader else "readahead"
+        default_cache_type = os.environ.get("GCSFS_DEFAULT_CACHE_TYPE", "readahead")
+        cache_type = "none" if use_prefetch_reader else default_cache_type
     return cache_type, use_prefetch_reader, cache_source
 
 

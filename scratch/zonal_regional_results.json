@@ -1,0 +1,350 @@
+[
+  {
+    "bucket_type": "zonal",
+    "backend": "cpp",
+    "mode": "count",
+    "ray_concurrency": 8,
+    "num_files": 64,
+    "total_mb": 2675.3148679733276,
+    "runs": [
+      {
+        "duration_s": 3.5591811928898096,
+        "throughput_mib_s": 751.6658250829755
+      },
+      {
+        "duration_s": 3.4990848023444414,
+        "throughput_mib_s": 764.5756016489869
+      },
+      {
+        "duration_s": 3.0045224241912365,
+        "throughput_mib_s": 890.4293229542044
+      }
+    ],
+    "mean_throughput_mib_s": 802.2235832287223,
+    "median_throughput_mib_s": 764.5756016489869,
+    "min_throughput_mib_s": 751.6658250829755,
+    "max_throughput_mib_s": 890.4293229542044,
+    "stdev_throughput_mib_s": 76.6606481392879,
+    "mean_duration_s": 3.3542628064751625,
+    "per_worker_mib_s": 100.27794790359029
+  },
+  {
+    "bucket_type": "zonal",
+    "backend": "gcsfs_c4",
+    "mode": "count",
+    "ray_concurrency": 8,
+    "num_files": 64,
+    "total_mb": 2675.3148679733276,
+    "runs": [
+      {
+        "duration_s": 2.961492884904146,
+        "throughput_mib_s": 903.3669746803794
+      },
+      {
+        "duration_s": 2.824387013912201,
+        "throughput_mib_s": 947.219646172928
+      },
+      {
+        "duration_s": 3.1321239825338125,
+        "throughput_mib_s": 854.1535657247714
+      }
+    ],
+    "mean_throughput_mib_s": 901.5800621926929,
+    "median_throughput_mib_s": 903.3669746803794,
+    "min_throughput_mib_s": 854.1535657247714,
+    "max_throughput_mib_s": 947.219646172928,
+    "stdev_throughput_mib_s": 46.558765282969844,
+    "mean_duration_s": 2.972667960450053,
+    "per_worker_mib_s": 112.69750777408662
+  },
+  {
+    "bucket_type": "zonal",
+    "backend": "gcsfs_c1",
+    "mode": "count",
+    "ray_concurrency": 8,
+    "num_files": 64,
+    "total_mb": 2675.3148679733276,
+    "runs": [
+      {
+        "duration_s": 3.211184222251177,
+        "throughput_mib_s": 833.1240697544964
+      },
+      {
+        "duration_s": 2.9593053199350834,
+        "throughput_mib_s": 904.0347577356481
+      },
+      {
+        "duration_s": 2.9553795848041773,
+        "throughput_mib_s": 905.2356190484388
+      }
+    ],
+    "mean_throughput_mib_s": 880.7981488461944,
+    "median_throughput_mib_s": 904.0347577356481,
+    "min_throughput_mib_s": 833.1240697544964,
+    "max_throughput_mib_s": 905.2356190484388,
+    "stdev_throughput_mib_s": 41.29132935501409,
+    "mean_duration_s": 3.0419563756634793,
+    "per_worker_mib_s": 110.0997686057743
+  },
+  {
+    "bucket_type": "zonal",
+    "backend": "cpp",
+    "mode": "materialize",
+    "ray_concurrency": 8,
+    "num_files": 64,
+    "total_mb": 2675.3148679733276,
+    "runs": [
+      {
+        "duration_s": 8.50952224433422,
+        "throughput_mib_s": 314.39072502038476
+      },
+      {
+        "duration_s": 8.819848898798227,
+        "throughput_mib_s": 303.32887770195924
+      },
+      {
+        "duration_s": 8.04270351678133,
+        "throughput_mib_s": 332.6387529257055
+      }
+    ],
+    "mean_throughput_mib_s": 316.78611854934985,
+    "median_throughput_mib_s": 314.39072502038476,
+    "min_throughput_mib_s": 303.32887770195924,
+    "max_throughput_mib_s": 332.6387529257055,
+    "stdev_throughput_mib_s": 14.801034728249553,
+    "mean_duration_s": 8.45735821997126,
+    "per_worker_mib_s": 39.59826481866873
+  },
+  {
+    "bucket_type": "zonal",
+    "backend": "gcsfs_c4",
+    "mode": "materialize",
+    "ray_concurrency": 8,
+    "num_files": 64,
+    "total_mb": 2675.3148679733276,
+    "runs": [
+      {
+        "duration_s": 8.62012393400073,
+        "throughput_mib_s": 310.3568914387607
+      },
+      {
+        "duration_s": 7.863532055169344,
+        "throughput_mib_s": 340.21796429438143
+      },
+      {
+        "duration_s": 7.936807477846742,
+        "throughput_mib_s": 337.07695133599753
+      }
+    ],
+    "mean_throughput_mib_s": 329.2172690230466,
+    "median_throughput_mib_s": 337.07695133599753,
+    "min_throughput_mib_s": 310.3568914387607,
+    "max_throughput_mib_s": 340.21796429438143,
+    "stdev_throughput_mib_s": 16.408896141043666,
+    "mean_duration_s": 8.140154489005605,
+    "per_worker_mib_s": 41.15215862788082
+  },
+  {
+    "bucket_type": "zonal",
+    "backend": "gcsfs_c1",
+    "mode": "materialize",
+    "ray_concurrency": 8,
+    "num_files": 64,
+    "total_mb": 2675.3148679733276,
+    "runs": [
+      {
+        "duration_s": 8.674951573833823,
+        "throughput_mib_s": 308.39536626842454
+      },
+      {
+        "duration_s": 8.322812210768461,
+        "throughput_mib_s": 321.4436178809699
+      },
+      {
+        "duration_s": 8.332817254588008,
+        "throughput_mib_s": 321.05766708135985
+      }
+    ],
+    "mean_throughput_mib_s": 316.9655504102514,
+    "median_throughput_mib_s": 321.05766708135985,
+    "min_throughput_mib_s": 308.39536626842454,
+    "max_throughput_mib_s": 321.4436178809699,
+    "stdev_throughput_mib_s": 7.424505483434284,
+    "mean_duration_s": 8.44352701306343,
+    "per_worker_mib_s": 39.620693801281426
+  },
+  {
+    "bucket_type": "regional",
+    "backend": "cpp",
+    "mode": "count",
+    "ray_concurrency": 8,
+    "num_files": 64,
+    "total_mb": 2675.3148679733276,
+    "runs": [
+      {
+        "duration_s": 4.580336520448327,
+        "throughput_mib_s": 584.0869674159806
+      },
+      {
+        "duration_s": 2.544513763859868,
+        "throughput_mib_s": 1051.405147015217
+      },
+      {
+        "duration_s": 2.704241594299674,
+        "throughput_mib_s": 989.3032019079502
+      }
+    ],
+    "mean_throughput_mib_s": 874.9317721130492,
+    "median_throughput_mib_s": 989.3032019079502,
+    "min_throughput_mib_s": 584.0869674159806,
+    "max_throughput_mib_s": 1051.405147015217,
+    "stdev_throughput_mib_s": 253.78571317350296,
+    "mean_duration_s": 3.2763639595359564,
+    "per_worker_mib_s": 109.36647151413115
+  },
+  {
+    "bucket_type": "regional",
+    "backend": "gcsfs_c4",
+    "mode": "count",
+    "ray_concurrency": 8,
+    "num_files": 64,
+    "total_mb": 2675.3148679733276,
+    "runs": [
+      {
+        "duration_s": 3.588876072317362,
+        "throughput_mib_s": 745.4464333859984
+      },
+      {
+        "duration_s": 2.489155864343047,
+        "throughput_mib_s": 1074.788005964991
+      },
+      {
+        "duration_s": 2.528465425595641,
+        "throughput_mib_s": 1058.0784854288022
+      }
+    ],
+    "mean_throughput_mib_s": 959.4376415932638,
+    "median_throughput_mib_s": 1058.0784854288022,
+    "min_throughput_mib_s": 745.4464333859984,
+    "max_throughput_mib_s": 1074.788005964991,
+    "stdev_throughput_mib_s": 185.51005339776404,
+    "mean_duration_s": 2.86883245408535,
+    "per_worker_mib_s": 119.92970519915798
+  },
+  {
+    "bucket_type": "regional",
+    "backend": "gcsfs_c1",
+    "mode": "count",
+    "ray_concurrency": 8,
+    "num_files": 64,
+    "total_mb": 2675.3148679733276,
+    "runs": [
+      {
+        "duration_s": 2.79148868098855,
+        "throughput_mib_s": 958.3828464695468
+      },
+      {
+        "duration_s": 2.4449072554707527,
+        "throughput_mib_s": 1094.239817067503
+      },
+      {
+        "duration_s": 2.3928067199885845,
+        "throughput_mib_s": 1118.0655945274555
+      }
+    ],
+    "mean_throughput_mib_s": 1056.8960860215018,
+    "median_throughput_mib_s": 1094.239817067503,
+    "min_throughput_mib_s": 958.3828464695468,
+    "max_throughput_mib_s": 1118.0655945274555,
+    "stdev_throughput_mib_s": 86.14267637564112,
+    "mean_duration_s": 2.543067552149296,
+    "per_worker_mib_s": 132.11201075268772
+  },
+  {
+    "bucket_type": "regional",
+    "backend": "cpp",
+    "mode": "materialize",
+    "ray_concurrency": 8,
+    "num_files": 64,
+    "total_mb": 2675.3148679733276,
+    "runs": [
+      {
+        "duration_s": 8.522624967619777,
+        "throughput_mib_s": 313.90737925671004
+      },
+      {
+        "duration_s": 8.929190509021282,
+        "throughput_mib_s": 299.61449083995024
+      },
+      {
+        "duration_s": 7.4372569266706705,
+        "throughput_mib_s": 359.7179570843396
+      }
+    ],
+    "mean_throughput_mib_s": 324.413275727,
+    "median_throughput_mib_s": 313.90737925671004,
+    "min_throughput_mib_s": 299.61449083995024,
+    "max_throughput_mib_s": 359.7179570843396,
+    "stdev_throughput_mib_s": 31.398838499711278,
+    "mean_duration_s": 8.296357467770576,
+    "per_worker_mib_s": 40.551659465875
+  },
+  {
+    "bucket_type": "regional",
+    "backend": "gcsfs_c4",
+    "mode": "materialize",
+    "ray_concurrency": 8,
+    "num_files": 64,
+    "total_mb": 2675.3148679733276,
+    "runs": [
+      {
+        "duration_s": 8.272259769961238,
+        "throughput_mib_s": 323.40798552870683
+      },
+      {
+        "duration_s": 8.312539024278522,
+        "throughput_mib_s": 321.8408792018307
+      },
+      {
+        "duration_s": 7.854609278962016,
+        "throughput_mib_s": 340.604449305831
+      }
+    ],
+    "mean_throughput_mib_s": 328.61777134545616,
+    "median_throughput_mib_s": 323.40798552870683,
+    "min_throughput_mib_s": 321.8408792018307,
+    "max_throughput_mib_s": 340.604449305831,
+    "stdev_throughput_mib_s": 10.410297399893784,
+    "mean_duration_s": 8.146469357733926,
+    "per_worker_mib_s": 41.07722141818202
+  },
+  {
+    "bucket_type": "regional",
+    "backend": "gcsfs_c1",
+    "mode": "materialize",
+    "ray_concurrency": 8,
+    "num_files": 64,
+    "total_mb": 2675.3148679733276,
+    "runs": [
+      {
+        "duration_s": 8.672554910182953,
+        "throughput_mib_s": 308.48059143817983
+      },
+      {
+        "duration_s": 7.930736109614372,
+        "throughput_mib_s": 337.3350003072304
+      },
+      {
+        "duration_s": 7.4700514655560255,
+        "throughput_mib_s": 358.1387464743783
+      }
+    ],
+    "mean_throughput_mib_s": 334.65144607326283,
+    "median_throughput_mib_s": 337.3350003072304,
+    "min_throughput_mib_s": 308.48059143817983,
+    "max_throughput_mib_s": 358.1387464743783,
+    "stdev_throughput_mib_s": 24.937605897414553,
+    "mean_duration_s": 8.024447495117784,
+    "per_worker_mib_s": 41.831430759157854
+  }
+]

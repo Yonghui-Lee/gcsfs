@@ -1,0 +1,314 @@
+[
+  {
+    "bucket_type": "zonal",
+    "backend": "gcsfs",
+    "mode": "streaming",
+    "ray_concurrency": 8,
+    "num_files": 256,
+    "total_mb": 65169.19298362732,
+    "runs": [
+      {
+        "duration_s": 68.98460864275694,
+        "throughput_mib_s": 944.6917836573068
+      },
+      {
+        "duration_s": 69.04774077795446,
+        "throughput_mib_s": 943.8280275266374
+      }
+    ],
+    "mean_throughput_mib_s": 944.259905591972,
+    "median_throughput_mib_s": 944.259905591972,
+    "min_throughput_mib_s": 943.8280275266374,
+    "max_throughput_mib_s": 944.6917836573068,
+    "stdev_throughput_mib_s": 0.6107678172878274,
+    "mean_duration_s": 69.0161747103557,
+    "per_worker_mib_s": 118.0324881989965,
+    "dataset": "hf-pile-deduplicated"
+  },
+  {
+    "bucket_type": "zonal",
+    "backend": "gcsfs_no_cache",
+    "mode": "streaming",
+    "ray_concurrency": 8,
+    "num_files": 256,
+    "total_mb": 65169.19298362732,
+    "runs": [
+      {
+        "duration_s": 70.18578030727804,
+        "throughput_mib_s": 928.5241639875234
+      },
+      {
+        "duration_s": 67.49757146649063,
+        "throughput_mib_s": 965.5042628604906
+      }
+    ],
+    "mean_throughput_mib_s": 947.014213424007,
+    "median_throughput_mib_s": 947.014213424007,
+    "min_throughput_mib_s": 928.5241639875234,
+    "max_throughput_mib_s": 965.5042628604906,
+    "stdev_throughput_mib_s": 26.148878682024133,
+    "mean_duration_s": 68.84167588688433,
+    "per_worker_mib_s": 118.37677667800088,
+    "dataset": "hf-pile-deduplicated"
+  },
+  {
+    "bucket_type": "zonal",
+    "backend": "cpp",
+    "mode": "streaming",
+    "ray_concurrency": 8,
+    "num_files": 256,
+    "total_mb": 65169.19298362732,
+    "runs": [
+      {
+        "duration_s": 72.22057127952576,
+        "throughput_mib_s": 902.3632993900524
+      },
+      {
+        "duration_s": 75.21978505142033,
+        "throughput_mib_s": 866.3836640729243
+      }
+    ],
+    "mean_throughput_mib_s": 884.3734817314883,
+    "median_throughput_mib_s": 884.3734817314883,
+    "min_throughput_mib_s": 866.3836640729243,
+    "max_throughput_mib_s": 902.3632993900524,
+    "stdev_throughput_mib_s": 25.441444117360277,
+    "mean_duration_s": 73.72017816547304,
+    "per_worker_mib_s": 110.54668521643603,
+    "dataset": "hf-pile-deduplicated"
+  },
+  {
+    "bucket_type": "zonal",
+    "backend": "gcsfs_no_prefetch",
+    "mode": "streaming",
+    "ray_concurrency": 8,
+    "num_files": 256,
+    "total_mb": 65169.19298362732,
+    "runs": [
+      {
+        "duration_s": 70.99932296201587,
+        "throughput_mib_s": 917.8847102315663
+      },
+      {
+        "duration_s": 67.22027085162699,
+        "throughput_mib_s": 969.4872120862627
+      }
+    ],
+    "mean_throughput_mib_s": 943.6859611589146,
+    "median_throughput_mib_s": 943.6859611589146,
+    "min_throughput_mib_s": 917.8847102315663,
+    "max_throughput_mib_s": 969.4872120862627,
+    "stdev_throughput_mib_s": 36.48847898764727,
+    "mean_duration_s": 69.10979690682143,
+    "per_worker_mib_s": 117.96074514486432,
+    "dataset": "hf-pile-deduplicated"
+  },
+  {
+    "bucket_type": "zonal",
+    "backend": "gcsfs",
+    "mode": "streaming",
+    "ray_concurrency": 16,
+    "num_files": 256,
+    "total_mb": 65169.19298362732,
+    "runs": [
+      {
+        "duration_s": 70.34607279859483,
+        "throughput_mib_s": 926.4084033548079
+      },
+      {
+        "duration_s": 69.10784883983433,
+        "throughput_mib_s": 943.0071124723428
+      }
+    ],
+    "mean_throughput_mib_s": 934.7077579135753,
+    "median_throughput_mib_s": 934.7077579135753,
+    "min_throughput_mib_s": 926.4084033548079,
+    "max_throughput_mib_s": 943.0071124723428,
+    "stdev_throughput_mib_s": 11.737059775951899,
+    "mean_duration_s": 69.72696081921458,
+    "per_worker_mib_s": 58.419234869598455,
+    "dataset": "hf-pile-deduplicated"
+  },
+  {
+    "bucket_type": "zonal",
+    "backend": "gcsfs_no_cache",
+    "mode": "streaming",
+    "ray_concurrency": 16,
+    "num_files": 256,
+    "total_mb": 65169.19298362732,
+    "runs": [
+      {
+        "duration_s": 71.62252647057176,
+        "throughput_mib_s": 909.897991526507
+      },
+      {
+        "duration_s": 69.85151282325387,
+        "throughput_mib_s": 932.9675242471229
+      }
+    ],
+    "mean_throughput_mib_s": 921.4327578868149,
+    "median_throughput_mib_s": 921.4327578868149,
+    "min_throughput_mib_s": 909.897991526507,
+    "max_throughput_mib_s": 932.9675242471229,
+    "stdev_throughput_mib_s": 16.312623025552472,
+    "mean_duration_s": 70.73701964691281,
+    "per_worker_mib_s": 57.58954736792593,
+    "dataset": "hf-pile-deduplicated"
+  },
+  {
+    "bucket_type": "zonal",
+    "backend": "cpp",
+    "mode": "streaming",
+    "ray_concurrency": 16,
+    "num_files": 256,
+    "total_mb": 65169.19298362732,
+    "runs": [
+      {
+        "duration_s": 70.03003061562777,
+        "throughput_mib_s": 930.5892402263821
+      },
+      {
+        "duration_s": 67.44334680959582,
+        "throughput_mib_s": 966.280531237739
+      }
+    ],
+    "mean_throughput_mib_s": 948.4348857320606,
+    "median_throughput_mib_s": 948.4348857320606,
+    "min_throughput_mib_s": 930.5892402263821,
+    "max_throughput_mib_s": 966.280531237739,
+    "stdev_throughput_mib_s": 25.23755390343289,
+    "mean_duration_s": 68.7366887126118,
+    "per_worker_mib_s": 59.27718035825379,
+    "dataset": "hf-pile-deduplicated"
+  },
+  {
+    "bucket_type": "zonal",
+    "backend": "gcsfs_no_prefetch",
+    "mode": "streaming",
+    "ray_concurrency": 16,
+    "num_files": 256,
+    "total_mb": 65169.19298362732,
+    "runs": [
+      {
+        "duration_s": 71.07461328431964,
+        "throughput_mib_s": 916.9123822444326
+      },
+      {
+        "duration_s": 70.50113874301314,
+        "throughput_mib_s": 924.3707852887095
+      }
+    ],
+    "mean_throughput_mib_s": 920.6415837665711,
+    "median_throughput_mib_s": 920.6415837665711,
+    "min_throughput_mib_s": 916.9123822444326,
+    "max_throughput_mib_s": 924.3707852887095,
+    "stdev_throughput_mib_s": 5.27388736943059,
+    "mean_duration_s": 70.78787601366639,
+    "per_worker_mib_s": 57.540098985410694,
+    "dataset": "hf-pile-deduplicated"
+  },
+  {
+    "bucket_type": "zonal",
+    "backend": "gcsfs",
+    "mode": "streaming",
+    "ray_concurrency": 32,
+    "num_files": 256,
+    "total_mb": 65169.19298362732,
+    "runs": [
+      {
+        "duration_s": 74.88255528733134,
+        "throughput_mib_s": 870.285378664858
+      },
+      {
+        "duration_s": 72.60011000744998,
+        "throughput_mib_s": 897.6459261141598
+      }
+    ],
+    "mean_throughput_mib_s": 883.9656523895089,
+    "median_throughput_mib_s": 883.9656523895089,
+    "min_throughput_mib_s": 870.285378664858,
+    "max_throughput_mib_s": 897.6459261141598,
+    "stdev_throughput_mib_s": 19.34682863837764,
+    "mean_duration_s": 73.74133264739066,
+    "per_worker_mib_s": 27.623926637172154,
+    "dataset": "hf-pile-deduplicated"
+  },
+  {
+    "bucket_type": "zonal",
+    "backend": "gcsfs_no_cache",
+    "mode": "streaming",
+    "ray_concurrency": 32,
+    "num_files": 256,
+    "total_mb": 65169.19298362732,
+    "runs": [
+      {
+        "duration_s": 72.12485538609326,
+        "throughput_mib_s": 903.5608131866411
+      },
+      {
+        "duration_s": 107.26731054484844,
+        "throughput_mib_s": 607.5401038080478
+      }
+    ],
+    "mean_throughput_mib_s": 755.5504584973444,
+    "median_throughput_mib_s": 755.5504584973444,
+    "min_throughput_mib_s": 607.5401038080478,
+    "max_throughput_mib_s": 903.5608131866411,
+    "stdev_throughput_mib_s": 209.31825097325557,
+    "mean_duration_s": 89.69608296547085,
+    "per_worker_mib_s": 23.610951828042012,
+    "dataset": "hf-pile-deduplicated"
+  },
+  {
+    "bucket_type": "zonal",
+    "backend": "cpp",
+    "mode": "streaming",
+    "ray_concurrency": 32,
+    "num_files": 256,
+    "total_mb": 65169.19298362732,
+    "runs": [
+      {
+        "duration_s": 73.81127437390387,
+        "throughput_mib_s": 882.9165129096866
+      },
+      {
+        "duration_s": 73.36134931258857,
+        "throughput_mib_s": 888.3314387518292
+      }
+    ],
+    "mean_throughput_mib_s": 885.6239758307579,
+    "median_throughput_mib_s": 885.6239758307579,
+    "min_throughput_mib_s": 882.9165129096866,
+    "max_throughput_mib_s": 888.3314387518292,
+    "stdev_throughput_mib_s": 3.828930782601285,
+    "mean_duration_s": 73.58631184324622,
+    "per_worker_mib_s": 27.675749244711184,
+    "dataset": "hf-pile-deduplicated"
+  },
+  {
+    "bucket_type": "zonal",
+    "backend": "gcsfs_no_prefetch",
+    "mode": "streaming",
+    "ray_concurrency": 32,
+    "num_files": 256,
+    "total_mb": 65169.19298362732,
+    "runs": [
+      {
+        "duration_s": 71.76317427866161,
+        "throughput_mib_s": 908.1146930676535
+      },
+      {
+        "duration_s": 108.88538504950702,
+        "throughput_mib_s": 598.5118476092708
+      }
+    ],
+    "mean_throughput_mib_s": 753.3132703384622,
+    "median_throughput_mib_s": 753.3132703384622,
+    "min_throughput_mib_s": 598.5118476092708,
+    "max_throughput_mib_s": 908.1146930676535,
+    "stdev_throughput_mib_s": 218.92227149827312,
+    "mean_duration_s": 90.32427966408432,
+    "per_worker_mib_s": 23.541039698076943,
+    "dataset": "hf-pile-deduplicated"
+  }
+]

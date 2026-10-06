@@ -1,0 +1,194 @@
+[
+  {
+    "backend": "cpp",
+    "mode": "count",
+    "ray_concurrency": 8,
+    "num_files": 32,
+    "total_mb": 8007.445340156555,
+    "runs": [
+      {
+        "duration_s": 2.8920120894908905,
+        "throughput_mib_s": 2768.8146150060475
+      },
+      {
+        "duration_s": 2.7131147366017103,
+        "throughput_mib_s": 2951.3847063416915
+      },
+      {
+        "duration_s": 2.6242278292775154,
+        "throughput_mib_s": 3051.352954503615
+      },
+      {
+        "duration_s": 2.7058912813663483,
+        "throughput_mib_s": 2959.2635133933286
+      }
+    ],
+    "mean_throughput_mib_s": 2932.703947311171,
+    "median_throughput_mib_s": 2955.32410986751,
+    "min_throughput_mib_s": 2768.8146150060475,
+    "max_throughput_mib_s": 3051.352954503615,
+    "stdev_throughput_mib_s": 118.30987766539288,
+    "mean_duration_s": 2.733811484184116,
+    "per_worker_mib_s": 366.58799341389636
+  },
+  {
+    "backend": "gcsfs_c4",
+    "mode": "count",
+    "ray_concurrency": 8,
+    "num_files": 32,
+    "total_mb": 8007.445340156555,
+    "runs": [
+      {
+        "duration_s": 2.763490768149495,
+        "throughput_mib_s": 2897.5835318308473
+      },
+      {
+        "duration_s": 3.21927029825747,
+        "throughput_mib_s": 2487.3479385967785
+      },
+      {
+        "duration_s": 2.908784005790949,
+        "throughput_mib_s": 2752.8497558481286
+      },
+      {
+        "duration_s": 3.1823010742664337,
+        "throughput_mib_s": 2516.243797580462
+      }
+    ],
+    "mean_throughput_mib_s": 2663.506255964054,
+    "median_throughput_mib_s": 2634.5467767142954,
+    "min_throughput_mib_s": 2487.3479385967785,
+    "max_throughput_mib_s": 2897.5835318308473,
+    "stdev_throughput_mib_s": 196.20772706123088,
+    "mean_duration_s": 3.018461536616087,
+    "per_worker_mib_s": 332.93828199550677
+  },
+  {
+    "backend": "gcsfs_c1",
+    "mode": "count",
+    "ray_concurrency": 8,
+    "num_files": 32,
+    "total_mb": 8007.445340156555,
+    "runs": [
+      {
+        "duration_s": 2.5405373070389032,
+        "throughput_mib_s": 3151.8707944066955
+      },
+      {
+        "duration_s": 2.9808054342865944,
+        "throughput_mib_s": 2686.33613185592
+      },
+      {
+        "duration_s": 2.7682048846036196,
+        "throughput_mib_s": 2892.6490899184814
+      },
+      {
+        "duration_s": 2.6258911564946175,
+        "throughput_mib_s": 3049.4201255645107
+      }
+    ],
+    "mean_throughput_mib_s": 2945.069035436402,
+    "median_throughput_mib_s": 2971.034607741496,
+    "min_throughput_mib_s": 2686.33613185592,
+    "max_throughput_mib_s": 3151.8707944066955,
+    "stdev_throughput_mib_s": 202.76972457069027,
+    "mean_duration_s": 2.7288596956059337,
+    "per_worker_mib_s": 368.13362942955024
+  },
+  {
+    "backend": "cpp",
+    "mode": "materialize",
+    "ray_concurrency": 8,
+    "num_files": 32,
+    "total_mb": 8007.445340156555,
+    "runs": [
+      {
+        "duration_s": 11.11767902597785,
+        "throughput_mib_s": 720.2443353011142
+      },
+      {
+        "duration_s": 19.4926532022655,
+        "throughput_mib_s": 410.7929924709225
+      },
+      {
+        "duration_s": 7.934761241078377,
+        "throughput_mib_s": 1009.1602124966145
+      },
+      {
+        "duration_s": 24.207662262022495,
+        "throughput_mib_s": 330.7814382687753
+      }
+    ],
+    "mean_throughput_mib_s": 617.7447446343566,
+    "median_throughput_mib_s": 565.5186638860184,
+    "min_throughput_mib_s": 330.7814382687753,
+    "max_throughput_mib_s": 1009.1602124966145,
+    "stdev_throughput_mib_s": 310.31661331209506,
+    "mean_duration_s": 15.688188932836056,
+    "per_worker_mib_s": 77.21809307929458
+  },
+  {
+    "backend": "gcsfs_c4",
+    "mode": "materialize",
+    "ray_concurrency": 8,
+    "num_files": 32,
+    "total_mb": 8007.445340156555,
+    "runs": [
+      {
+        "duration_s": 8.450611855834723,
+        "throughput_mib_s": 947.558055767029
+      },
+      {
+        "duration_s": 11.062765093520284,
+        "throughput_mib_s": 723.8195218342564
+      },
+      {
+        "duration_s": 8.143219148740172,
+        "throughput_mib_s": 983.3267647470076
+      },
+      {
+        "duration_s": 7.682045174762607,
+        "throughput_mib_s": 1042.3585331759004
+      }
+    ],
+    "mean_throughput_mib_s": 924.2657188810483,
+    "median_throughput_mib_s": 965.4424102570183,
+    "min_throughput_mib_s": 723.8195218342564,
+    "max_throughput_mib_s": 1042.3585331759004,
+    "stdev_throughput_mib_s": 139.23042147819888,
+    "mean_duration_s": 8.834660318214446,
+    "per_worker_mib_s": 115.53321486013104
+  },
+  {
+    "backend": "gcsfs_c1",
+    "mode": "materialize",
+    "ray_concurrency": 8,
+    "num_files": 32,
+    "total_mb": 8007.445340156555,
+    "runs": [
+      {
+        "duration_s": 9.101144064217806,
+        "throughput_mib_s": 879.8284351567125
+      },
+      {
+        "duration_s": 8.570479093119502,
+        "throughput_mib_s": 934.3054516736458
+      },
+      {
+        "duration_s": 10.461767939850688,
+        "throughput_mib_s": 765.4007798868113
+      },
+      {
+        "duration_s": 8.233311709016562,
+        "throughput_mib_s": 972.5667657386696
+      }
+    ],
+    "mean_throughput_mib_s": 888.0253581139598,
+    "median_throughput_mib_s": 907.0669434151791,
+    "min_throughput_mib_s": 765.4007798868113,
+    "max_throughput_mib_s": 972.5667657386696,
+    "stdev_throughput_mib_s": 90.17219341240725,
+    "mean_duration_s": 9.09167570155114,
+    "per_worker_mib_s": 111.00316976424497
+  }
+]

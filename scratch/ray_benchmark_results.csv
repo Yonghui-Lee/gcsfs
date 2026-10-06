@@ -1,0 +1,5 @@
+backend,bucket_type,prefix,batch_size,prefetch_factor,num_workers,world_size,rounds,expected_rows,build_seconds,ttfb_seconds,mean_epoch_duration,throughput_mib_per_sec,samples_per_sec,peak_cpu_cores,peak_mem_mib,net_recv_mib_per_sec
+gcsfs,regional,gs://yonghui-gcsfs-regional-us/ray_data_large_dataset,128,2,0,1,1,698880,0.211,2.096,8.886,301.08,78650.8,1.0,71247007744.0,320.53
+cpp,regional,gs://yonghui-gcsfs-regional-us/ray_data_large_dataset,128,2,0,1,1,698880,1.393,0.992,8.316,321.72,84044.0,0.67,85903077376.0,352.64
+gcsfs,zonal,gs://yonghui-us-central1-b/ray_data_large_dataset,128,2,0,1,1,698880,0.12,0.772,9.793,273.18,71364.2,0.56,100643893248.0,287.57
+cpp,zonal,gs://yonghui-us-central1-b/ray_data_large_dataset,128,2,0,1,1,698880,32.439,1.936,8.6,311.09,81267.2,0.5,114244165632.0,341.85

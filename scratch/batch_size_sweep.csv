@@ -1,0 +1,13 @@
+backend,bucket_type,prefix,batch_size,prefetch_factor,num_workers,world_size,rounds,expected_rows,build_seconds,ttfb_seconds,mean_epoch_duration,throughput_mib_per_sec,samples_per_sec,peak_cpu_cores,peak_mem_mib,net_recv_mib_per_sec
+gcsfs,regional,gs://yonghui-gcsfs-regional-us/ray_data_large_dataset,16,4,0,1,2,698880,0.152,2.093,24.582,108.83,28430.8,1.0,82084.5,115.81
+cpp,regional,gs://yonghui-gcsfs-regional-us/ray_data_large_dataset,16,4,0,1,2,698880,1.119,0.896,23.836,112.24,29319.9,0.73,106586.5,122.82
+gcsfs,regional,gs://yonghui-gcsfs-regional-us/ray_data_large_dataset,64,4,0,1,2,698880,0.137,0.599,12.252,218.36,57041.6,0.82,126421.8,232.22
+cpp,regional,gs://yonghui-gcsfs-regional-us/ray_data_large_dataset,64,4,0,1,2,698880,1.25,0.747,12.207,219.16,57252.8,0.76,149370.1,239.9
+gcsfs,regional,gs://yonghui-gcsfs-regional-us/ray_data_large_dataset,256,4,0,1,2,698880,0.156,0.714,8.528,313.69,81946.5,0.83,168855.2,333.61
+cpp,regional,gs://yonghui-gcsfs-regional-us/ray_data_large_dataset,256,4,0,1,2,698880,0.948,0.788,8.744,305.95,79924.4,0.78,190483.1,334.93
+gcsfs,zonal,gs://yonghui-us-central1-b/ray_data_large_dataset,16,4,0,1,2,698880,0.115,0.714,23.837,112.23,29318.6,0.83,212164.1,116.42
+cpp,zonal,gs://yonghui-us-central1-b/ray_data_large_dataset,16,4,0,1,2,698880,1.422,0.942,24.464,109.36,28567.4,0.73,232663.4,120.09
+gcsfs,zonal,gs://yonghui-us-central1-b/ray_data_large_dataset,64,4,0,1,2,698880,0.121,0.832,12.188,219.5,57341.6,0.88,250989.1,224.98
+cpp,zonal,gs://yonghui-us-central1-b/ray_data_large_dataset,64,4,0,1,2,698880,2.101,0.986,12.785,209.26,54664.9,0.76,269835.2,229.33
+gcsfs,zonal,gs://yonghui-us-central1-b/ray_data_large_dataset,256,4,0,1,2,698880,0.085,0.532,8.346,320.54,83736.5,0.82,286090.8,328.25
+cpp,zonal,gs://yonghui-us-central1-b/ray_data_large_dataset,256,4,0,1,2,698880,1.296,0.76,9.259,288.95,75482.9,0.73,303941.7,316.76

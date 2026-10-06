@@ -1,0 +1,178 @@
+[
+  {
+    "backend": "gcsfs_no_cache",
+    "bucket_type": "regional",
+    "concurrency": 8,
+    "num_files": 8,
+    "total_mib": 7943.878288269043,
+    "runs": [
+      {
+        "duration_s": 23.666675500571728,
+        "throughput_mib_s": 335.6567037933629
+      },
+      {
+        "duration_s": 24.927654467523098,
+        "throughput_mib_s": 318.6773267664912
+      }
+    ],
+    "mean_throughput_mib_s": 327.16701527992706,
+    "median_throughput_mib_s": 327.16701527992706,
+    "min_throughput_mib_s": 318.6773267664912,
+    "max_throughput_mib_s": 335.6567037933629,
+    "stdev_throughput_mib_s": 12.00623263602406
+  },
+  {
+    "backend": "gcsfs_prefetch_on",
+    "bucket_type": "regional",
+    "concurrency": 8,
+    "num_files": 8,
+    "total_mib": 7943.878288269043,
+    "runs": [
+      {
+        "duration_s": 6.380134986713529,
+        "throughput_mib_s": 1245.0956452821092
+      },
+      {
+        "duration_s": 5.3506052773445845,
+        "throughput_mib_s": 1484.669093776145
+      }
+    ],
+    "mean_throughput_mib_s": 1364.8823695291271,
+    "median_throughput_mib_s": 1364.8823695291271,
+    "min_throughput_mib_s": 1245.0956452821092,
+    "max_throughput_mib_s": 1484.669093776145,
+    "stdev_throughput_mib_s": 169.4040100223788
+  },
+  {
+    "backend": "gcsfs_readahead",
+    "bucket_type": "regional",
+    "concurrency": 8,
+    "num_files": 8,
+    "total_mib": 7943.878288269043,
+    "runs": [
+      {
+        "duration_s": 15.126661682501435,
+        "throughput_mib_s": 525.1573979114337
+      },
+      {
+        "duration_s": 17.314949179068208,
+        "throughput_mib_s": 458.7872713985371
+      }
+    ],
+    "mean_throughput_mib_s": 491.9723346549854,
+    "median_throughput_mib_s": 491.9723346549854,
+    "min_throughput_mib_s": 458.7872713985371,
+    "max_throughput_mib_s": 525.1573979114337,
+    "stdev_throughput_mib_s": 46.930766525478255
+  },
+  {
+    "backend": "pyarrow_cpp",
+    "bucket_type": "regional",
+    "concurrency": 8,
+    "num_files": 8,
+    "total_mib": 7943.878288269043,
+    "runs": [
+      {
+        "duration_s": 9.145958974957466,
+        "throughput_mib_s": 868.5670152271798
+      },
+      {
+        "duration_s": 8.415131948888302,
+        "throughput_mib_s": 943.9992547375904
+      }
+    ],
+    "mean_throughput_mib_s": 906.283134982385,
+    "median_throughput_mib_s": 906.283134982385,
+    "min_throughput_mib_s": 868.5670152271798,
+    "max_throughput_mib_s": 943.9992547375904,
+    "stdev_throughput_mib_s": 53.33864807789913
+  },
+  {
+    "backend": "gcsfs_no_cache",
+    "bucket_type": "regional",
+    "concurrency": 16,
+    "num_files": 8,
+    "total_mib": 7943.878288269043,
+    "runs": [
+      {
+        "duration_s": 13.827243059873581,
+        "throughput_mib_s": 574.5091956416127
+      },
+      {
+        "duration_s": 10.887133406475186,
+        "throughput_mib_s": 729.6574765534126
+      }
+    ],
+    "mean_throughput_mib_s": 652.0833360975126,
+    "median_throughput_mib_s": 652.0833360975126,
+    "min_throughput_mib_s": 574.5091956416127,
+    "max_throughput_mib_s": 729.6574765534126,
+    "stdev_throughput_mib_s": 109.70640152216912
+  },
+  {
+    "backend": "gcsfs_prefetch_on",
+    "bucket_type": "regional",
+    "concurrency": 16,
+    "num_files": 8,
+    "total_mib": 7943.878288269043,
+    "runs": [
+      {
+        "duration_s": 6.235273180529475,
+        "throughput_mib_s": 1274.022494006346
+      },
+      {
+        "duration_s": 6.646167857572436,
+        "throughput_mib_s": 1195.2569448299498
+      }
+    ],
+    "mean_throughput_mib_s": 1234.639719418148,
+    "median_throughput_mib_s": 1234.639719418148,
+    "min_throughput_mib_s": 1195.2569448299498,
+    "max_throughput_mib_s": 1274.022494006346,
+    "stdev_throughput_mib_s": 55.69565394651226
+  },
+  {
+    "backend": "gcsfs_readahead",
+    "bucket_type": "regional",
+    "concurrency": 16,
+    "num_files": 8,
+    "total_mib": 7943.878288269043,
+    "runs": [
+      {
+        "duration_s": 14.085637860000134,
+        "throughput_mib_s": 563.9700784036037
+      },
+      {
+        "duration_s": 10.69643945619464,
+        "throughput_mib_s": 742.665661858956
+      }
+    ],
+    "mean_throughput_mib_s": 653.3178701312798,
+    "median_throughput_mib_s": 653.3178701312798,
+    "min_throughput_mib_s": 563.9700784036037,
+    "max_throughput_mib_s": 742.665661858956,
+    "stdev_throughput_mib_s": 126.35685882936626
+  },
+  {
+    "backend": "pyarrow_cpp",
+    "bucket_type": "regional",
+    "concurrency": 16,
+    "num_files": 8,
+    "total_mib": 7943.878288269043,
+    "runs": [
+      {
+        "duration_s": 7.530872477218509,
+        "throughput_mib_s": 1054.8416949430375
+      },
+      {
+        "duration_s": 9.036873361095786,
+        "throughput_mib_s": 879.0516333301578
+      }
+    ],
+    "mean_throughput_mib_s": 966.9466641365976,
+    "median_throughput_mib_s": 966.9466641365976,
+    "min_throughput_mib_s": 879.0516333301578,
+    "max_throughput_mib_s": 1054.8416949430375,
+    "stdev_throughput_mib_s": 124.30234463166828
+  }
+]
