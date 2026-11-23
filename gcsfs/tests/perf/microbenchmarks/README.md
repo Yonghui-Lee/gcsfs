@@ -43,7 +43,14 @@ The benchmarks use a set of parameter classes to define the configuration for ea
 *   **Listing Parameters**: Specific to Listing, Delete, Rename, and Info operations.
     *   `depth`: Directory depth.
     *   `folders`: Number of folders.
-    *   `pattern`: Listing pattern (e.g., "ls", "find", "walk").
+    *   `pattern`: Listing pattern (e.g., "ls", "find", "walk"). `find_detail` runs `invalidate_cache(prefix)` + `find(prefix + "/", detail=True)` on a flat prefix of objects carrying custom metadata.
+
+*   **Pipe Parameters**: Specific to Pipe operations (extends IO Parameters).
+    *    `pattern`: `overwrite` (`pipe(path, data)` to the same key every round) or `create_with_metadata` (`pipe_file(mode="create", content_type=..., metadata=...)` to a new key every round).
+    *    Scenarios may set `file_sizes_bytes` instead of the common `file_sizes_mb`; such cases have no separate chunk size.
+
+*   **Write Parameters**: Specific to Write operations (extends IO Parameters).
+    *    `pattern`: `seq_fixed_duration` (stream writes for `runtime` seconds) or `create_setxattrs` (one `file_sizes_bytes` object per round, then `setxattrs`).
 
 *   **Info Parameters**: Specific to Info operations (extends Listing Parameters).
     *    `target_type`: The type of target to query: "bucket", "folder", or "file".
@@ -100,6 +107,18 @@ Configuration values are stored in YAML files (e.g., `configs.yaml`) located wit
 
 *   **Common**: Shared settings like bucket types, file sizes, rounds, or runtime.
 *   **Scenarios**: Specific test scenarios defining variations in threads, processes, patterns, etc.
+
+### ADK artifact scenarios
+
+Three scenarios reproduce the gcsfs calls that ADK's `FsspecArtifactService` makes. All three run single-threaded, report `requests_per_op` (one op is one artifact save or one version listing), and set `rounds: 10`.
+
+| Group | Scenario | Bucket types | Timed operation | Sizes |
+| :--- | :--- | :--- | :--- | :--- |
+| `listing` | `adk_version_prefix` | `regional`, `hns` | `invalidate_cache(prefix)` + `find(prefix + "/", detail=True)` over `<prefix>/0` … `<prefix>/N-1`, each with `contentType` and `adkDisplayName` metadata | 10, 100, 1000, 1200 objects |
+| `pipe` | `adk_exclusive_create` | `regional`, `hns` | `pipe_file(key, data, mode="create", content_type=..., metadata=...)` to a new key every round | 4 KiB, 32 KiB, 256 KiB |
+| `write` | `adk_rapid_create_setxattrs` | `zonal` | `open(key, "wb", generation=0, finalize_on_close=True)`, write, close, then `setxattrs(key, content_type=..., **metadata)` on a new key every round | 4 KiB, 256 KiB |
+
+Zonal writes go over gRPC and are not counted, so on `adk_rapid_create_setxattrs` the count covers only the JSON API calls, such as the `setxattrs` PATCH.
 
 ## Configurators
 

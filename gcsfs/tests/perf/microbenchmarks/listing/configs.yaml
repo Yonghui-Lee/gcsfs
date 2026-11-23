@@ -66,3 +66,12 @@ scenarios:
     folders: [256]
     pattern: "walk"
     files: [65536, 131072]
+
+  # ADK FsspecArtifactService lists every version of one artifact on each save
+  # and latest-version load: invalidate_cache(prefix), then
+  # find(prefix + "/", detail=True) over <prefix>/0, <prefix>/1, ... objects
+  # carrying custom metadata. 1200 crosses the 1000-object listing page.
+  - name: "adk_version_prefix"
+    pattern: "find_detail"
+    files: [10, 100, 1000, 1200]
+    rounds: 10

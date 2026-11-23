@@ -15,3 +15,15 @@ scenarios:
 
   - name: "pipe_file_multi_process"
     processes: [4, 8]
+
+  # ADK FsspecArtifactService save on Standard/HNS buckets: an exclusive create
+  # (ifGenerationMatch=0) carrying contentType and custom metadata. Each round
+  # writes a fresh key because the create fails on an existing object.
+  - name: "adk_exclusive_create"
+    pattern: "create_with_metadata"
+    bucket_types: ["regional", "hns"]
+    file_sizes_bytes:
+      - 4096 # 4 KiB
+      - 32768 # 32 KiB
+      - 262144 # 256 KiB
+    rounds: 10

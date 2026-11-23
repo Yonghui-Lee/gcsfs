@@ -10,21 +10,43 @@ class PipeConfigurator(BaseBenchmarkConfigurator):
     def build_cases(self, scenario, common_config):
         procs_list = scenario.get("processes", [1])
         threads_list = scenario.get("threads", [1])
-        bucket_types = common_config.get("bucket_types", ["regional"])
+        bucket_types = scenario.get(
+            "bucket_types", common_config.get("bucket_types", ["regional"])
+        )
         file_sizes_mb = common_config.get("file_sizes_mb", [200])
         chunk_sizes_mb = common_config.get("chunk_sizes_mb", [50])
-        rounds = common_config.get("rounds", 1)
+        rounds = scenario.get("rounds", common_config.get("rounds", 1))
+        pattern = scenario.get("pattern", "overwrite")
+
+        # Small objects are configured in bytes and go up in a single request,
+        # so they have no separate chunk size.
+        file_sizes_bytes = scenario.get("file_sizes_bytes")
+        if file_sizes_bytes:
+            size_options = [
+                (f"{size_bytes}B_file", size_bytes, size_bytes)
+                for size_bytes in file_sizes_bytes
+            ]
+        else:
+            size_options = [
+                (
+                    f"{file_size_mb}MB_file_{chunk_size_mb}MB_chunk",
+                    int(file_size_mb * MB),
+                    int(chunk_size_mb * MB),
+                )
+                for file_size_mb, chunk_size_mb in itertools.product(
+                    file_sizes_mb, chunk_sizes_mb
+                )
+            ]
 
         cases = []
         param_combinations = itertools.product(
-            procs_list, threads_list, file_sizes_mb, chunk_sizes_mb, bucket_types
+            procs_list, threads_list, size_options, bucket_types
         )
 
         for (
             procs,
             threads,
-            file_size_mb,
-            chunk_size_mb,
+            (size_label, file_size_bytes, chunk_size_bytes),
             bucket_type,
         ) in param_combinations:
             bucket_name = self.get_bucket_name(bucket_type)
@@ -33,7 +55,7 @@ class PipeConfigurator(BaseBenchmarkConfigurator):
 
             name = (
                 f"{scenario['name']}_{procs}procs_{threads}threads_"
-                f"{file_size_mb}MB_file_{chunk_size_mb}MB_chunk_{bucket_type}"
+                f"{size_label}_{bucket_type}"
             )
 
             params = PipeBenchmarkParameters(
@@ -44,8 +66,9 @@ class PipeConfigurator(BaseBenchmarkConfigurator):
                 processes=procs,
                 files=threads * procs,
                 rounds=rounds,
-                file_size_bytes=int(file_size_mb * MB),
-                chunk_size_bytes=int(chunk_size_mb * MB),
+                file_size_bytes=file_size_bytes,
+                chunk_size_bytes=chunk_size_bytes,
+                pattern=pattern,
             )
             cases.append(params)
         return cases

@@ -14,6 +14,11 @@ from gcsfs.tests.perf.microbenchmarks.runner import (
 
 BENCHMARK_GROUP = "pipe"
 
+# Cases with this pattern save an ADK artifact instead of a plain pipe.
+ADK_PATTERN = "create_with_metadata"
+ADK_CONTENT_TYPE = "text/plain"
+ADK_METADATA = {"adkDisplayName": "report.txt"}
+
 
 def _pipe_op(gcs, file_path, data_buffer, chunk_size):
     """Pipe data buffer to a single file."""
@@ -24,8 +29,24 @@ def _pipe_op(gcs, file_path, data_buffer, chunk_size):
         raise
 
 
+def _create_with_metadata_op(gcs, file_path, data_buffer):
+    """Exclusive create with contentType and metadata, as an ADK artifact save."""
+    gcs.pipe_file(
+        file_path,
+        data_buffer,
+        mode="create",
+        content_type=ADK_CONTENT_TYPE,
+        metadata=ADK_METADATA,
+    )
+
+
 all_benchmark_cases = get_pipe_benchmark_cases()
-single_threaded_cases, _, multi_process_cases = filter_test_cases(all_benchmark_cases)
+single_threaded_cases, _, multi_process_cases = filter_test_cases(
+    [case for case in all_benchmark_cases if case.pattern != ADK_PATTERN]
+)
+adk_single_threaded_cases, _, _ = filter_test_cases(
+    [case for case in all_benchmark_cases if case.pattern == ADK_PATTERN]
+)
 
 
 @pytest.mark.parametrize(
@@ -53,6 +74,32 @@ def test_pipe_single_threaded(benchmark, gcsfs_benchmark_pipe, monitor):
         _pipe_op,
         op_args,
         BENCHMARK_GROUP,
+    )
+
+
+@pytest.mark.parametrize(
+    "gcsfs_benchmark_pipe",
+    adk_single_threaded_cases,
+    indirect=True,
+    ids=lambda p: p.name,
+)
+def test_pipe_adk_exclusive_create(benchmark, gcsfs_benchmark_pipe, monitor):
+    gcs, file_paths, params = gcsfs_benchmark_pipe
+    data_buffer = os.urandom(params.file_size_bytes)
+
+    def round_args_builder(round_num):
+        # Exclusive create fails on an existing key, so each round needs a new one.
+        return (gcs, f"{file_paths[0]}_round_{round_num}", data_buffer)
+
+    run_single_threaded(
+        benchmark,
+        monitor,
+        params,
+        _create_with_metadata_op,
+        None,
+        BENCHMARK_GROUP,
+        operations_per_round=1,
+        round_args_builder=round_args_builder,
     )
 
 

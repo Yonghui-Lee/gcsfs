@@ -15,5 +15,7 @@ class ListingBenchmarkParameters(BaseBenchmarkParameters):
     # The number of folders to create.
     folders: int
 
-    # The listing pattern to use: "ls", "find", or "walk".
+    # The listing pattern to use: "ls", "find", "walk", or "find_detail"
+    # (invalidate_cache + find(detail=True) on a flat prefix of objects carrying
+    # ADK-style custom metadata).
     pattern: str

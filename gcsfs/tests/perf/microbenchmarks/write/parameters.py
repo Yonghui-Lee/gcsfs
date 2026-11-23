@@ -14,3 +14,8 @@ class WriteBenchmarkParameters(IOBenchmarkParameters):
 
     # Time in seconds the test should run.
     runtime: int
+
+    # "seq_fixed_duration" streams writes for `runtime` seconds;
+    # "create_setxattrs" writes one `file_size_bytes` object per round with
+    # generation=0 and finalize_on_close=True, then calls setxattrs.
+    pattern: str = "seq_fixed_duration"

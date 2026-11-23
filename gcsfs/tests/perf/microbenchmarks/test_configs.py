@@ -26,7 +26,10 @@ from gcsfs.tests.perf.microbenchmarks.listing.configs import (
     get_listing_benchmark_cases,
 )
 from gcsfs.tests.perf.microbenchmarks.open.configs import get_open_benchmark_cases
-from gcsfs.tests.perf.microbenchmarks.pipe.configs import get_pipe_benchmark_cases
+from gcsfs.tests.perf.microbenchmarks.pipe.configs import (
+    PipeConfigurator,
+    get_pipe_benchmark_cases,
+)
 from gcsfs.tests.perf.microbenchmarks.put.configs import (
     PutConfigurator,
     get_put_benchmark_cases,
@@ -931,7 +934,6 @@ def test_rcu_bucket_types_in_shipped_yaml_configs():
         for get_fn in (
             get_write_benchmark_cases,
             get_put_benchmark_cases,
-            get_pipe_benchmark_cases,
         ):
             assert {c.bucket_type for c in get_fn()} == {
                 "regional",
@@ -939,6 +941,15 @@ def test_rcu_bucket_types_in_shipped_yaml_configs():
                 "standard_rcu_z",
                 "hns_rcu_z",
             }
+
+        # pipe also runs adk_exclusive_create on hns
+        assert {c.bucket_type for c in get_pipe_benchmark_cases()} == {
+            "regional",
+            "zonal",
+            "hns",
+            "standard_rcu_z",
+            "hns_rcu_z",
+        }
 
         # Metadata, open, and comparison groups ship without RCU bucket types
         for get_fn in (
@@ -972,3 +983,168 @@ def test_rcu_bucket_types_in_shipped_yaml_configs():
     ):
         filtered_reopen = get_read_benchmark_cases()
         assert [c.name for c in filtered_reopen] == [c.name for c in reopen_cases]
+
+
+def test_listing_configurator_adk_version_prefix(mock_config_dependencies):
+    """Test that the ADK find_detail scenario builds flat, single-folder cases."""
+    common = {"bucket_types": ["regional"], "rounds": 1}
+    scenario = {
+        "name": "adk_version_prefix",
+        "pattern": "find_detail",
+        "files": [10, 1200],
+        "rounds": 10,
+    }
+
+    cases = ListingConfigurator("dummy").build_cases(scenario, common)
+
+    assert [c.name for c in cases] == [
+        "adk_version_prefix_1procs_1threads_10files_0depth_1folders_find_detail_regional",
+        "adk_version_prefix_1procs_1threads_1200files_0depth_1folders_find_detail_regional",
+    ]
+    assert [c.files for c in cases] == [10, 1200]
+    assert {(c.depth, c.folders, c.pattern, c.rounds) for c in cases} == {
+        (0, 1, "find_detail", 10)
+    }
+
+
+def test_pipe_configurator_keeps_default_case_names(mock_config_dependencies):
+    """Test that MB-sized pipe cases keep their names and the overwrite pattern."""
+    common = {
+        "bucket_types": ["regional"],
+        "file_sizes_mb": [200],
+        "chunk_sizes_mb": [50],
+        "rounds": 3,
+    }
+
+    cases = PipeConfigurator("dummy").build_cases({"name": "pipe_file"}, common)
+
+    assert len(cases) == 1
+    case = cases[0]
+    assert case.name == "pipe_file_1procs_1threads_200MB_file_50MB_chunk_regional"
+    assert case.file_size_bytes == 200 * MB
+    assert case.chunk_size_bytes == 50 * MB
+    assert case.rounds == 3
+    assert case.pattern == "overwrite"
+
+
+def test_pipe_configurator_adk_exclusive_create():
+    """Test that the ADK exclusive-create scenario builds byte-sized cases."""
+    common = {
+        "bucket_types": ["zonal"],
+        "file_sizes_mb": [4096],
+        "chunk_sizes_mb": [50],
+        "rounds": 3,
+    }
+    scenario = {
+        "name": "adk_exclusive_create",
+        "pattern": "create_with_metadata",
+        "bucket_types": ["regional", "hns"],
+        "file_sizes_bytes": [4096, 262144],
+        "rounds": 10,
+    }
+    bucket_map = {"regional": "reg-bkt", "hns": "hns-bkt", "zonal": "zonal-bkt"}
+
+    with (
+        mock.patch(
+            "gcsfs.tests.perf.microbenchmarks.configs.BUCKET_NAME_MAP", bucket_map
+        ),
+        mock.patch(
+            "gcsfs.tests.perf.microbenchmarks.configs.BENCHMARK_BUCKET_TYPES", ""
+        ),
+    ):
+        cases = PipeConfigurator("dummy").build_cases(scenario, common)
+
+    assert [c.name for c in cases] == [
+        "adk_exclusive_create_1procs_1threads_4096B_file_regional",
+        "adk_exclusive_create_1procs_1threads_4096B_file_hns",
+        "adk_exclusive_create_1procs_1threads_262144B_file_regional",
+        "adk_exclusive_create_1procs_1threads_262144B_file_hns",
+    ]
+    assert [c.bucket_name for c in cases] == ["reg-bkt", "hns-bkt"] * 2
+    assert [c.file_size_bytes for c in cases] == [4096, 4096, 262144, 262144]
+    assert all(c.chunk_size_bytes == c.file_size_bytes for c in cases)
+    assert {(c.pattern, c.rounds, c.files) for c in cases} == {
+        ("create_with_metadata", 10, 1)
+    }
+
+
+def test_write_configurator_adk_rapid_create_setxattrs():
+    """Test that the ADK Rapid create scenario builds zonal, byte-sized cases."""
+    common = {
+        "bucket_types": ["regional", "zonal"],
+        "chunk_sizes_mb": [16],
+        "rounds": 3,
+        "runtime": 30,
+    }
+    scenario = {
+        "name": "adk_rapid_create_setxattrs",
+        "pattern": "create_setxattrs",
+        "bucket_types": ["zonal"],
+        "file_sizes_bytes": [4096, 262144],
+        "rounds": 10,
+    }
+    bucket_map = {"regional": "reg-bkt", "zonal": "zonal-bkt"}
+
+    with (
+        mock.patch(
+            "gcsfs.tests.perf.microbenchmarks.configs.BUCKET_NAME_MAP", bucket_map
+        ),
+        mock.patch(
+            "gcsfs.tests.perf.microbenchmarks.configs.BENCHMARK_BUCKET_TYPES", ""
+        ),
+    ):
+        cases = WriteConfigurator("dummy").build_cases(scenario, common)
+
+    assert [c.name for c in cases] == [
+        "adk_rapid_create_setxattrs_1procs_1threads_4096B_file_zonal",
+        "adk_rapid_create_setxattrs_1procs_1threads_262144B_file_zonal",
+    ]
+    assert [c.file_size_bytes for c in cases] == [4096, 262144]
+    assert [c.chunk_size_bytes for c in cases] == [4096, 262144]
+    assert {
+        (c.bucket_name, c.pattern, c.rounds, c.runtime, c.block_size_bytes)
+        for c in cases
+    } == {("zonal-bkt", "create_setxattrs", 10, 0, 16 * MB)}
+
+
+def test_shipped_adk_scenarios():
+    """Verify the shipped ADK scenarios: sizes, bucket types, and single-threaded."""
+    with (
+        mock.patch("gcsfs.tests.perf.microbenchmarks.configs.BENCHMARK_FILTER", ""),
+        mock.patch(
+            "gcsfs.tests.perf.microbenchmarks.configs.BENCHMARK_BUCKET_TYPES", ""
+        ),
+    ):
+        listing_cases = [
+            c
+            for c in get_listing_benchmark_cases()
+            if c.name.startswith("adk_version_prefix")
+        ]
+        pipe_cases = [
+            c
+            for c in get_pipe_benchmark_cases()
+            if c.name.startswith("adk_exclusive_create")
+        ]
+        write_cases = [
+            c
+            for c in get_write_benchmark_cases()
+            if c.name.startswith("adk_rapid_create_setxattrs")
+        ]
+
+    assert {(c.bucket_type, c.files, c.pattern) for c in listing_cases} == {
+        (bucket_type, files, "find_detail")
+        for bucket_type in ("regional", "hns")
+        for files in (10, 100, 1000, 1200)
+    }
+    assert {(c.bucket_type, c.file_size_bytes, c.pattern) for c in pipe_cases} == {
+        (bucket_type, size_bytes, "create_with_metadata")
+        for bucket_type in ("regional", "hns")
+        for size_bytes in (4096, 32768, 262144)
+    }
+    assert {(c.bucket_type, c.file_size_bytes, c.pattern) for c in write_cases} == {
+        ("zonal", 4096, "create_setxattrs"),
+        ("zonal", 262144, "create_setxattrs"),
+    }
+    for cases in (listing_cases, pipe_cases, write_cases):
+        single_threaded, _, _ = filter_test_cases(cases)
+        assert single_threaded == cases

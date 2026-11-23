@@ -12,7 +12,7 @@ class ListingConfigurator(BaseBenchmarkConfigurator):
     def build_cases(self, scenario, common_config):
         procs_list = scenario.get("processes", [1])
         threads_list = scenario.get("threads", [1])
-        rounds = common_config.get("rounds", 1)
+        rounds = scenario.get("rounds", common_config.get("rounds", 1))
         bucket_types = common_config.get("bucket_types", ["regional"])
         scenario_depth = scenario.get("depth", 0)
         pattern = scenario.get("pattern", "N/A")

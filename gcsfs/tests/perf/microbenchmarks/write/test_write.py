@@ -8,11 +8,17 @@ import pytest
 from gcsfs.tests.perf.microbenchmarks.runner import (
     filter_test_cases,
     run_multi_process,
+    run_single_threaded,
     run_single_threaded_fixed_duration,
 )
 from gcsfs.tests.perf.microbenchmarks.write.configs import get_write_benchmark_cases
 
 BENCHMARK_GROUP = "write"
+
+# Cases with this pattern save an ADK artifact to a Rapid (zonal) bucket.
+ADK_PATTERN = "create_setxattrs"
+ADK_CONTENT_TYPE = "text/plain"
+ADK_METADATA = {"adkDisplayName": "report.txt"}
 
 
 def _write_op_seq_fixed_duration(gcs, file_path, chunk_size, runtime):
@@ -34,8 +40,20 @@ def _write_op_seq_fixed_duration(gcs, file_path, chunk_size, runtime):
     return total_bytes_written
 
 
+def _create_setxattrs_op(gcs, file_path, data_buffer):
+    """Rapid-bucket ADK artifact save: exclusive create, then set metadata."""
+    with gcs.open(file_path, "wb", generation=0, finalize_on_close=True) as stream:
+        stream.write(data_buffer)
+    gcs.setxattrs(file_path, content_type=ADK_CONTENT_TYPE, **ADK_METADATA)
+
+
 all_benchmark_cases = get_write_benchmark_cases()
-single_threaded_cases, _, multi_process_cases = filter_test_cases(all_benchmark_cases)
+single_threaded_cases, _, multi_process_cases = filter_test_cases(
+    [case for case in all_benchmark_cases if case.pattern != ADK_PATTERN]
+)
+adk_single_threaded_cases, _, _ = filter_test_cases(
+    [case for case in all_benchmark_cases if case.pattern == ADK_PATTERN]
+)
 
 
 @pytest.mark.parametrize(
@@ -60,6 +78,32 @@ def test_write_single_threaded(benchmark, gcsfs_benchmark_write, monitor):
         _write_op_seq_fixed_duration,
         op_args,
         BENCHMARK_GROUP,
+    )
+
+
+@pytest.mark.parametrize(
+    "gcsfs_benchmark_write",
+    adk_single_threaded_cases,
+    indirect=True,
+    ids=lambda p: p.name,
+)
+def test_write_adk_rapid_create_setxattrs(benchmark, gcsfs_benchmark_write, monitor):
+    gcs, file_paths, params = gcsfs_benchmark_write
+    data_buffer = os.urandom(params.file_size_bytes)
+
+    def round_args_builder(round_num):
+        # generation=0 fails on an existing key, so each round needs a new one.
+        return (gcs, f"{file_paths[0]}_round_{round_num}", data_buffer)
+
+    run_single_threaded(
+        benchmark,
+        monitor,
+        params,
+        _create_setxattrs_op,
+        None,
+        BENCHMARK_GROUP,
+        operations_per_round=1,
+        round_args_builder=round_args_builder,
     )
 
 

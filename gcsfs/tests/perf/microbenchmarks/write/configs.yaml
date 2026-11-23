@@ -15,3 +15,14 @@ scenarios:
 
   - name: "write_seq_fixed_duration_multi_process"
     processes: [16, 48]
+
+  # ADK FsspecArtifactService save on Rapid (zonal) buckets, which take no
+  # metadata at upload: open(key, "wb", generation=0, finalize_on_close=True),
+  # write, close, then setxattrs(key, content_type=..., **metadata).
+  - name: "adk_rapid_create_setxattrs"
+    pattern: "create_setxattrs"
+    bucket_types: ["zonal"]
+    file_sizes_bytes:
+      - 4096 # 4 KiB
+      - 262144 # 256 KiB
+    rounds: 10

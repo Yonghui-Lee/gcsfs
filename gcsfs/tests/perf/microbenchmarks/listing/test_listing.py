@@ -1,5 +1,6 @@
 import logging
 import time
+import uuid
 from concurrent.futures import ThreadPoolExecutor
 
 import pytest
@@ -13,6 +14,11 @@ from gcsfs.tests.perf.microbenchmarks.runner import (
 )
 
 BENCHMARK_GROUP = "listing"
+
+# Cases with this pattern list one ADK artifact's versions instead of a tree.
+ADK_PATTERN = "find_detail"
+ADK_CONTENT_TYPE = "text/plain"
+ADK_METADATA = {"adkDisplayName": "report.txt"}
 
 
 def _list_op(gcs, path, pattern="ls"):
@@ -46,7 +52,10 @@ def _chunk_list(data, n):
 
 all_benchmark_cases = get_listing_benchmark_cases()
 single_threaded_cases, multi_threaded_cases, multi_process_cases = filter_test_cases(
-    all_benchmark_cases
+    [case for case in all_benchmark_cases if case.pattern != ADK_PATTERN]
+)
+adk_single_threaded_cases, _, _ = filter_test_cases(
+    [case for case in all_benchmark_cases if case.pattern == ADK_PATTERN]
 )
 
 
@@ -143,4 +152,60 @@ def test_listing_multi_process(
         args_builder=args_builder,
         benchmark_group=BENCHMARK_GROUP,
         request=request,
+    )
+
+
+def _adk_list_versions(gcs, prefix):
+    """List one artifact's versions the way ADK's FsspecArtifactService does."""
+    start_time = time.perf_counter()
+    gcs.invalidate_cache(prefix)
+    versions = gcs.find(f"{prefix}/", detail=True)
+    duration_ms = (time.perf_counter() - start_time) * 1000
+    logging.info(
+        f"FIND_DETAIL : {prefix} - {len(versions)} versions - {duration_ms:.2f} ms."
+    )
+
+
+@pytest.fixture
+def gcsfs_benchmark_adk_versions(extended_gcs_factory, request):
+    """Creates <prefix>/0 .. <prefix>/<files - 1> carrying ADK-style metadata."""
+    params = request.param
+    gcs = extended_gcs_factory()
+    prefix = f"{params.bucket_name}/benchmark-adk-versions-{uuid.uuid4()}"
+    logging.info(
+        f"Setting up benchmark '{params.name}': creating {params.files} "
+        f"versions with metadata under '{prefix}'."
+    )
+    try:
+        gcs.pipe(
+            {f"{prefix}/{version}": b"" for version in range(params.files)},
+            content_type=ADK_CONTENT_TYPE,
+            metadata=ADK_METADATA,
+        )
+        yield gcs, prefix, params
+    finally:
+        logging.info(f"Tearing down benchmark '{params.name}': deleting versions.")
+        try:
+            gcs.rm(prefix, recursive=True)
+        except Exception as e:
+            logging.error(f"Failed to clean up benchmark files: {e!r}")
+
+
+@pytest.mark.parametrize(
+    "gcsfs_benchmark_adk_versions",
+    adk_single_threaded_cases,
+    indirect=True,
+    ids=lambda p: p.name,
+)
+def test_listing_adk_version_prefix(benchmark, gcsfs_benchmark_adk_versions, monitor):
+    gcs, prefix, params = gcsfs_benchmark_adk_versions
+
+    run_single_threaded(
+        benchmark,
+        monitor,
+        params,
+        _adk_list_versions,
+        (gcs, prefix),
+        BENCHMARK_GROUP,
+        operations_per_round=1,
     )
